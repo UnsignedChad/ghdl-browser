@@ -2049,12 +2049,9 @@ package body Vhdl.Sem_Names is
       Res_It : List_Iterator;
       N : Natural;
    begin
-      Simple_IO.Put_Line_Err ("sin: enter for " & Name_Table.Image (Id));
       Interpretation := Get_Interpretation (Id);
-      Simple_IO.Put_Line_Err ("sin: got interpretation");
 
       if not Valid_Interpretation (Interpretation) then
-         Simple_IO.Put_Line_Err ("sin: branch unknown");
          --  Unknown name.
          if not Soft then
             Interpretation := Get_Interpretation_Raw (Id);
@@ -2070,11 +2067,8 @@ package body Vhdl.Sem_Names is
          Res := Error_Mark;
       elsif not Valid_Interpretation (Get_Next_Interpretation (Interpretation))
       then
-         Simple_IO.Put_Line_Err ("sin: branch single");
          --  One simple interpretation.
-         Simple_IO.Put_Line_Err ("sin: pre-Get_Declaration");
          Res := Get_Declaration (Interpretation);
-         Simple_IO.Put_Line_Err ("sin: post-Get_Declaration, kind=" & Iir_Kind'Image (Get_Kind (Res)));
 
          --  For a design unit, return the library unit
          if Get_Kind (Res) = Iir_Kind_Design_Unit then
@@ -2085,7 +2079,6 @@ package body Vhdl.Sem_Names is
          end if;
 
          --  Check visibility.
-         Simple_IO.Put_Line_Err ("sin: pre-Visible_Flag check");
          if not Get_Visible_Flag (Res) then
             if Flag_Relaxed_Rules
               and then Get_Kind (Res) in Iir_Kinds_Object_Declaration
@@ -2103,7 +2096,6 @@ package body Vhdl.Sem_Names is
             end if;
          end if;
 
-         Simple_IO.Put_Line_Err ("sin: pre-alias check");
          if not Keep_Alias
            and then Get_Kind (Res) = Iir_Kind_Non_Object_Alias_Declaration
          then
@@ -2142,7 +2134,6 @@ package body Vhdl.Sem_Names is
 
          Res := Create_Overload_List (Res_List);
       end if;
-      Simple_IO.Put_Line_Err ("sin: pre-return");
       return Res;
    end Sem_Identifier_Name;
 
@@ -2159,11 +2150,8 @@ package body Vhdl.Sem_Names is
       Id : constant Name_Id := Get_Identifier (Name);
       Res : Iir;
    begin
-      Simple_IO.Put_Line_Err ("ssn: enter");
       Res := Sem_Identifier_Name (Id, Name, Keep_Alias, Soft);
-      Simple_IO.Put_Line_Err ("ssn: post-Sem_Identifier_Name");
       Set_Named_Entity (Name, Res);
-      Simple_IO.Put_Line_Err ("ssn: post-Set_Named_Entity");
    end Sem_Simple_Name;
 
    --  LRM93 6.3
@@ -2342,16 +2330,13 @@ package body Vhdl.Sem_Names is
             +Suffix);
       end Check_Synopsys_Package;
    begin
-      Simple_IO.Put_Line_Err ("sselN: enter");
       --  Analyze prefix.
       if Soft then
          Sem_Name_Soft (Prefix_Name);
       else
          Sem_Name (Prefix_Name);
       end if;
-      Simple_IO.Put_Line_Err ("sselN: post-Sem_Name(prefix)");
       Prefix := Get_Named_Entity (Prefix_Name);
-      Simple_IO.Put_Line_Err ("sselN: prefix kind=" & Iir_Kind'Image (Get_Kind (Prefix)));
       if Is_Error (Prefix) then
          Set_Named_Entity (Name, Prefix);
          return;
@@ -2416,9 +2401,7 @@ package body Vhdl.Sem_Names is
                  (+Name, "no suffix %i for overloaded selected name", +Suffix);
             end if;
          when Iir_Kind_Library_Declaration =>
-            Simple_IO.Put_Line_Err ("sselN: Library branch, pre-Load_Primary_Unit");
             Res := Load_Primary_Unit (Prefix, Suffix, Name);
-            Simple_IO.Put_Line_Err ("sselN: post-Load_Primary_Unit");
             if Res /= Null_Iir then
                if not Soft and then not Flag_Synopsys then
                   Check_Synopsys_Package (Prefix);
@@ -4534,9 +4517,7 @@ package body Vhdl.Sem_Names is
    --  LRM93 6
    procedure Sem_Name (Name : Iir; Keep_Alias : Boolean := False) is
    begin
-      Simple_IO.Put_Line_Err ("sn: enter, kind=" & Iir_Kind'Image (Get_Kind (Name)));
       if Get_Named_Entity (Name) /= Null_Iir then
-         Simple_IO.Put_Line_Err ("sn: already analyzed");
          return;
       end if;
 
@@ -4544,9 +4525,7 @@ package body Vhdl.Sem_Names is
          when Iir_Kind_Simple_Name
            | Iir_Kind_Character_Literal
            | Iir_Kind_Operator_Symbol =>
-            Simple_IO.Put_Line_Err ("sn: SimpleName branch");
             Sem_Simple_Name (Name, Keep_Alias, Soft => False);
-            Simple_IO.Put_Line_Err ("sn: SimpleName done");
          when Iir_Kind_Selected_Name =>
             Sem_Selected_Name (Name, Keep_Alias);
          when Iir_Kind_Parenthesis_Name =>
@@ -5031,13 +5010,10 @@ package body Vhdl.Sem_Names is
    is
       Res: Iir;
    begin
-      Simple_IO.Put_Line_Err ("sdn: enter");
       pragma Assert (Get_Kind (Name) in Iir_Kinds_Denoting_Name);
 
       Sem_Name (Name);
-      Simple_IO.Put_Line_Err ("sdn: post-Sem_Name");
       Res := Get_Named_Entity (Name);
-      Simple_IO.Put_Line_Err ("sdn: post-Get_Named_Entity, kind=" & Iir_Kind'Image (Get_Kind (Res)));
 
       case Get_Kind (Res) is
          when Iir_Kind_Error =>
@@ -5071,9 +5047,7 @@ package body Vhdl.Sem_Names is
            | Iir_Kinds_Subprogram_Declaration
            | Iir_Kind_Component_Declaration
            | Iir_Kind_Architecture_Body =>
-            Simple_IO.Put_Line_Err ("sdn: pre-Finish_Sem_Name");
             Res := Finish_Sem_Name (Name, Res);
-            Simple_IO.Put_Line_Err ("sdn: post-Finish_Sem_Name, return");
             pragma Assert (Get_Kind (Res) in Iir_Kinds_Denoting_Name);
             return Res;
          when Iir_Kind_Selected_Element =>

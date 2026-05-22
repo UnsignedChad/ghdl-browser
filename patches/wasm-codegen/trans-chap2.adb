@@ -145,9 +145,7 @@ package body Trans.Chap2 is
       El_List : O_Element_List;
       Param_Info : Ortho_Info_Acc;
    begin
-      Simple_IO.Put_Line_Err ("tsi: enter");
       Push_Subprg_Identifier (Spec, Mark);
-      Simple_IO.Put_Line_Err ("tsi: post-Push_Subprg_Identifier");
 
       --  Translate interface types.
       Inter := Get_Interface_Declaration_Chain (Spec);
@@ -1076,13 +1074,10 @@ package body Trans.Chap2 is
       Prev_Storage : constant O_Storage := Global_Storage;
       Prev_Subprg_Instance : Subprgs.Subprg_Instance_Stack;
    begin
-      Simple_IO.Put_Line_Err ("tpbi: enter");
       if Is_Spec_Decl and then Get_Macro_Expand_Flag (Spec) then
-         Simple_IO.Put_Line_Err ("tpbi: early return (macro_expand)");
          return;
       end if;
 
-      Simple_IO.Put_Line_Err ("tpbi: pre-Translate_Declaration_Chain");
       if Is_Spec_Decl and then Is_Uninstantiated_Package (Spec) then
          Push_Package_Instance_Factory (Spec);
          Chap4.Translate_Declaration_Chain (Bod);
@@ -1091,7 +1086,6 @@ package body Trans.Chap2 is
          Restore_Local_Identifier (Info.Package_Local_Id);
          Chap4.Translate_Declaration_Chain (Bod);
       end if;
-      Simple_IO.Put_Line_Err ("tpbi: post-Translate_Declaration_Chain");
 
       --  May be called during elaboration to generate RTI.
       if Global_Storage = O_Storage_External then
@@ -1117,10 +1111,8 @@ package body Trans.Chap2 is
       end if;
 
       if not Is_Nested then
-         Simple_IO.Put_Line_Err ("tpbi: pre-Translate_Declaration_Chain_Subprograms");
          Chap4.Translate_Declaration_Chain_Subprograms
            (Bod, Subprg_Translate_Spec_And_Body);
-         Simple_IO.Put_Line_Err ("tpbi: post-Translate_Declaration_Chain_Subprograms");
       end if;
 
       if Is_Spec_Decl and then Is_Uninstantiated_Package (Spec) then

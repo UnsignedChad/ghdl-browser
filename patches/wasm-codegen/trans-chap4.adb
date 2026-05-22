@@ -2575,32 +2575,16 @@ package body Trans.Chap4 is
       Info : Subprg_Info_Acc;
       El   : Iir;
    begin
-      Simple_IO.Put_Line_Err ("tdc: enter");
       El := Get_Declaration_Chain (Parent);
       while El /= Null_Iir loop
-         Simple_IO.Put_Line_Err ("tdc: iter, El=" & Iir'Image (El));
-         Simple_IO.Put_Line_Err ("tdc: kind=" & Iir_Kind'Image (Get_Kind (El)));
          case Get_Kind (El) is
             when Iir_Kind_Procedure_Declaration
               | Iir_Kind_Function_Declaration =>
-               Simple_IO.Put_Line_Err ("tdc-fn: pre-check");
-               if not Is_Implicit_Subprogram (El) then
-                  Simple_IO.Put_Line_Err ("tdc-fn: not implicit");
-                  Simple_IO.Put_Line_Err ("tdc-fn: Flag_Discard_Unused=" & Boolean'Image (Flag_Discard_Unused));
-                  Simple_IO.Put_Line_Err ("tdc-fn: pre-Get_Use_Flag");
-                  declare U : Boolean; begin U := Get_Use_Flag (El); Simple_IO.Put_Line_Err ("tdc-fn: Use_Flag=" & Boolean'Image (U)); end;
-                  Simple_IO.Put_Line_Err ("tdc-fn: pre-Is_Second_Subprogram_Specification");
-                  declare S : Boolean; begin S := Is_Second_Subprogram_Specification (El); Simple_IO.Put_Line_Err ("tdc-fn: Is_Second=" & Boolean'Image (S)); end;
-               else
-                  Simple_IO.Put_Line_Err ("tdc-fn: implicit!");
-               end if;
                if not Is_Implicit_Subprogram (El)
                  and then (not Flag_Discard_Unused or else Get_Use_Flag (El))
                  and then not Is_Second_Subprogram_Specification (El)
                then
-                  Simple_IO.Put_Line_Err ("tdc-fn: pre-Add_Info");
                   Info := Add_Info (El, Kind_Subprg);
-                  Simple_IO.Put_Line_Err ("tdc-fn: pre-Translate_Subprogram_Interfaces");
                   Chap2.Translate_Subprogram_Interfaces (El);
                   if Get_Kind (El) = Iir_Kind_Function_Declaration then
                      if Get_Resolution_Function_Flag (El) then
@@ -2612,15 +2596,10 @@ package body Trans.Chap4 is
                | Iir_Kind_Procedure_Body =>
                null;
             when others =>
-               Simple_IO.Put_Line_Err ("tdc:   pre-Translate_Declaration");
                Translate_Declaration (El);
-               Simple_IO.Put_Line_Err ("tdc:   post-Translate_Declaration");
          end case;
-         Simple_IO.Put_Line_Err ("tdc:   end of case body");
          El := Get_Chain (El);
-         Simple_IO.Put_Line_Err ("tdc:   chained");
       end loop;
-      Simple_IO.Put_Line_Err ("tdc: loop done");
    end Translate_Declaration_Chain;
 
    procedure Translate_Statements_Chain_State_Declaration

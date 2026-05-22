@@ -540,15 +540,12 @@ package body Trans.Chap12 is
       Conf_Info : Config_Info_Acc;
       Last_Design_Unit : Natural;
    begin
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: enter");
       Config_Lib := Get_Library_Unit (Config);
       Entity := Get_Entity (Config_Lib);
       Arch := Strip_Denoting_Name
         (Get_Block_Specification (Get_Block_Configuration (Config_Lib)));
 
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: pre-Check_Entity");
       Check_Entity_Declaration_Top (Entity, True);
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: post-Check_Entity");
 
       --  If all design units are loaded, late semantic checks can be
       --  performed.
@@ -586,20 +583,14 @@ package body Trans.Chap12 is
          Flag_Discard_Unused_Implicit := True;
       end if;
 
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: pre-Update_Node_Infos");
       Update_Node_Infos;
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: pre-Generate_Library(Std)");
       Rtis.Generate_Library (Libraries.Std_Library, True);
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: pre-Translate_Standard");
       Translate_Standard (Whole);
-      Simple_IO.Put_Line_Err ("chap12.Elaborate: post-Translate_Standard");
       Set_Elab_Flag (Std_Standard_Unit, True);
 
-      Simple_IO.Put_Line_Err ("chap12: entering main translate loop");
       for I in Design_Units.First .. Design_Units.Last loop
          Unit := Design_Units.Table (I);
          Lib_Unit := Get_Library_Unit (Unit);
-         Simple_IO.Put_Line_Err ("chap12: unit kind=" & Iir_Kind'Image (Get_Kind (Lib_Unit)) & " name=" & Name_Table.Image (Get_Identifier (Lib_Unit)));
 
          if Whole then
             --  In whole compilation mode, force to generate RTIS of
@@ -632,9 +623,7 @@ package body Trans.Chap12 is
             when others =>
                Error_Kind ("elaborate", Lib_Unit);
          end case;
-         Simple_IO.Put_Line_Err ("chap12: unit translated");
       end loop;
-      Simple_IO.Put_Line_Err ("chap12: main loop done");
 
       for I in Design_Units.First .. Design_Units.Last loop
          Unit := Design_Units.Table (I);

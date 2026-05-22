@@ -773,10 +773,8 @@ package body Libraries is
       Library: Iir_Library_Declaration;
       Found : Boolean;
    begin
-      Simple_IO.Put_Line_Err ("libs.Get_Library: enter for " & Name_Table.Image (Ident));
       Library := Get_Library_No_Create (Ident);
       if Library /= Null_Iir then
-         Simple_IO.Put_Line_Err ("libs.Get_Library: already loaded");
          return Library;
       end if;
 
@@ -786,9 +784,7 @@ package body Libraries is
       Set_Location (Library, Library_Location);
       Set_Library_Directory (Library, Null_Identifier);
       Set_Identifier (Library, Ident);
-      Simple_IO.Put_Line_Err ("libs.Get_Library: pre-Load_Library");
       Found := Load_Library (Library);
-      Simple_IO.Put_Line_Err ("libs.Get_Library: post-Load_Library, found=" & Boolean'Image (Found));
       if not Found then
          if not Force then
             Error_Msg_Sem (+Loc, "cannot find resource library %i", +Ident);
@@ -1075,7 +1071,6 @@ package body Libraries is
       File_Name : Name_Id;
       Dir_Name : Name_Id;
    begin
-      Simple_IO.Put_Line_Err ("adul: enter, date=" & Date_Type'Image (Get_Date (Unit)) & " state=" & Date_State_Type'Image (Get_Date_State (Unit)));
 
       --  Mark this design unit as being loaded.
       case Get_Kind (Unit) is
@@ -1086,16 +1081,12 @@ package body Libraries is
          when others =>
             raise Internal_Error;
       end case;
-      Simple_IO.Put_Line_Err ("adul: post-kind-case");
       Unit_Id := Get_Identifier (New_Library_Unit);
-      Simple_IO.Put_Line_Err ("adul: got Unit_Id");
 
-      Simple_IO.Put_Line_Err ("adul: pre-date-case");
       case Get_Date (Unit) is
          when Date_Parsed =>
             Set_Date_State (Unit, Date_Parse);
          when Date_Analyzed =>
-            Simple_IO.Put_Line_Err ("adul: Date_Analyzed branch");
             Date := Get_Date (Work_Library) + 1;
             Set_Date (Unit, Date);
             Set_Date (Work_Library, Date);
@@ -1106,43 +1097,30 @@ package body Libraries is
             raise Internal_Error;
       end case;
 
-      Simple_IO.Put_Line_Err ("adul: post-date-case");
       declare
          File : constant Source_File_Entry :=
            Get_Design_File_Source (Get_Design_File (Unit));
       begin
-         Simple_IO.Put_Line_Err ("adul: in time-stamp block");
-         Simple_IO.Put_Line_Err ("adul: pre-Get_File_Checksum");
          New_Lib_Checksum := Files_Map.Get_File_Checksum (File);
-         Simple_IO.Put_Line_Err ("adul: pre-Get_File_Name");
          File_Name := Files_Map.Get_File_Name (File);
-         Simple_IO.Put_Line_Err ("adul: file_name=" & Image (File_Name));
          if Filesystem.Is_Absolute_Path (Image (File_Name)) then
             Dir_Name := Null_Identifier;
          else
-            Simple_IO.Put_Line_Err ("adul: pre-Get_Home_Directory");
             Dir_Name := Files_Map.Get_Home_Directory;
-            Simple_IO.Put_Line_Err ("adul: post-Get_Home_Directory");
          end if;
-         Simple_IO.Put_Line_Err ("adul: end of timestamp block");
       end;
 
-      Simple_IO.Put_Line_Err ("adul: post-timestamp-block");
       if Unit_Id = Null_Identifier then
          pragma Assert (Flags.Flag_Force_Analysis);
          return;
       end if;
 
-      Simple_IO.Put_Line_Err ("adul: pre-Get_Hash_Id_For_Unit");
       Id := Get_Hash_Id_For_Unit (Unit);
-      Simple_IO.Put_Line_Err ("adul: got hash id=" & Hash_Id'Image (Id));
       declare
          Design_Unit, Prev_Design_Unit : Iir_Design_Unit;
          Next_Design_Unit : Iir_Design_Unit;
       begin
-         Simple_IO.Put_Line_Err ("adul: pre Unit_Hash_Table access");
          Design_Unit := Unit_Hash_Table (Id);
-         Simple_IO.Put_Line_Err ("adul: post Unit_Hash_Table, du=" & Iir'Image (Design_Unit));
          Prev_Design_Unit := Null_Iir;
          while Design_Unit /= Null_Iir loop
             Next_Design_Unit := Get_Hash_Chain (Design_Unit);
@@ -1243,16 +1221,13 @@ package body Libraries is
          end loop;
       end;
 
-      Simple_IO.Put_Line_Err ("adul: hash-loop done");
       if Last_Design_File /= Null_Iir
         and then Get_Library (Last_Design_File) = Work_Library
         and then Get_Design_File_Filename (Last_Design_File) = File_Name
         and then Get_Design_File_Directory (Last_Design_File) = Dir_Name
       then
          Design_File := Last_Design_File;
-         Simple_IO.Put_Line_Err ("adul: last_design_file hit");
       else
-         Simple_IO.Put_Line_Err ("adul: searching design file chain");
          Design_File := Get_Design_File_Chain (Work_Library);
          while Design_File /= Null_Iir loop
             if Get_Design_File_Filename (Design_File) = File_Name
@@ -1263,10 +1238,8 @@ package body Libraries is
             Design_File := Get_Chain (Design_File);
          end loop;
          Last_Design_File := Design_File;
-         Simple_IO.Put_Line_Err ("adul: design file search done");
       end if;
 
-      Simple_IO.Put_Line_Err ("adul: pre-outdate-check, Design_File=" & Iir'Image (Design_File));
       if Design_File /= Null_Iir
         and then New_Lib_Checksum /= No_File_Checksum_Id
         and then
@@ -1274,7 +1247,6 @@ package body Libraries is
            or else not Files_Map.Is_Eq (New_Lib_Checksum,
                                         Get_File_Checksum (Design_File)))
       then
-         Simple_IO.Put_Line_Err ("adul: outdate branch");
          --  FIXME: this test is not enough: what about reanalyzing
          --   unmodified files (this works only because the order is not
          --   changed).
@@ -1301,9 +1273,7 @@ package body Libraries is
          Set_Last_Design_Unit (Design_File, Null_Iir);
       end if;
 
-      Simple_IO.Put_Line_Err ("adul: pre-design-file-create");
       if Design_File = Null_Iir then
-         Simple_IO.Put_Line_Err ("adul: creating new Design_File");
          Design_File := Create_Iir (Iir_Kind_Design_File);
          Location_Copy (Design_File, Unit);
 
@@ -1316,7 +1286,6 @@ package body Libraries is
          Set_Design_File_Chain (Work_Library, Design_File);
       end if;
 
-      Simple_IO.Put_Line_Err ("adul: pre-add-to-file");
       Last_Unit := Get_Last_Design_Unit (Design_File);
       if Last_Unit = Null_Iir then
          pragma Assert (Get_First_Design_Unit (Design_File) = Null_Iir);
@@ -1328,13 +1297,10 @@ package body Libraries is
       Set_Last_Design_Unit (Design_File, Unit);
       Set_Design_File (Unit, Design_File);
 
-      Simple_IO.Put_Line_Err ("adul: pre-Set_Hash_Chain");
       Set_Hash_Chain (Unit, Unit_Hash_Table (Id));
       Unit_Hash_Table (Id) := Unit;
 
-      Simple_IO.Put_Line_Err ("adul: skipping Set_Analysis_Time_Stamp (wasm)");
       --  Skip on wasm32: Ada.Calendar.Split is stubbed so the timestamp would be invalid.
-      Simple_IO.Put_Line_Err ("adul: done!");
    end Add_Design_Unit_Into_Library;
 
    procedure Add_Design_File_Into_Library (File : in out Iir_Design_File)

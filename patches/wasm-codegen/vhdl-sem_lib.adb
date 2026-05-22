@@ -201,18 +201,15 @@ package body Vhdl.Sem_Lib is
 
       Fe := Get_Design_File_Source (Design_File);
       if Fe = No_Source_File_Entry then
-         Simple_IO.Put_Line_Err ("lpdu: dir=" & Name_Table.Image (Get_Design_File_Directory (Design_File)) & " file=" & Name_Table.Image (Get_Design_File_Filename (Design_File)));
          Fe := Files_Map.Read_Source_File
            (Get_Design_File_Directory (Design_File),
             Get_Design_File_Filename (Design_File));
          if Fe = No_Source_File_Entry then
-            Simple_IO.Put_Line_Err ("lpdu: read FAILED");
             Error_Msg_Lib
               (Loc, "cannot load %n", +Get_Library_Unit (Design_Unit));
             raise Compilation_Error;
          end if;
          Set_Design_File_Source (Design_File, Fe);
-         Simple_IO.Put_Line_Err ("lpdu: source loaded");
 
          --  Skip checksum verification under wasm32 (SHA-1 stubbed in JS host).
          Checksum := Get_File_Checksum (Design_File);
@@ -226,25 +223,19 @@ package body Vhdl.Sem_Lib is
       end if;
 
       --  Set the position of the lexer
-      Simple_IO.Put_Line_Err ("lpdu: pre-Set_File");
       Set_File (Fe);
       Pos := Get_Design_Unit_Source_Pos (Design_Unit);
       Line := Natural (Get_Design_Unit_Source_Line (Design_Unit));
       Off := Natural (Get_Design_Unit_Source_Col (Design_Unit));
-      Simple_IO.Put_Line_Err ("lpdu: pre-File_Add_Line_Number");
       Files_Map.File_Add_Line_Number (Get_Current_Source_File, Line, Pos);
       Set_Current_Position (Pos + Source_Ptr (Off));
 
       Flags.Flag_Gather_Comments := False;
 
       --  Parse
-      Simple_IO.Put_Line_Err ("lpdu: pre-Scan");
       Scan;
-      Simple_IO.Put_Line_Err ("lpdu: pre-Parse_Design_Unit");
       Res := Vhdl.Parse.Parse_Design_Unit;
-      Simple_IO.Put_Line_Err ("lpdu: post-Parse");
       Close_File;
-      Simple_IO.Put_Line_Err ("lpdu: post-Close_File");
 
       Flags.Flag_Gather_Comments := Prev_Flag_Gather_Comments;
 

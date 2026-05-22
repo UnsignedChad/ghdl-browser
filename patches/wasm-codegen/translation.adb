@@ -2016,31 +2016,23 @@ package body Translation is
       Time_Type_Staticness : Iir_Staticness;
       Time_Subtype_Staticness : Iir_Staticness;
    begin
-      Simple_IO.Put_Line_Err ("ts: enter, Main=" & Boolean'Image (Main));
       Update_Node_Infos;
-      Simple_IO.Put_Line_Err ("ts: post-Update_Node_Infos");
 
       New_Debug_Comment_Decl ("package std.standard");
-      Simple_IO.Put_Line_Err ("ts: post-Debug_Comment_Decl");
       if Main then
          Gen_Filename (Std_Standard_File);
          Set_Global_Storage (O_Storage_Public);
       else
          Set_Global_Storage (O_Storage_External);
       end if;
-      Simple_IO.Put_Line_Err ("ts: post-Storage");
 
       Info := Add_Info (Standard_Package, Kind_Package);
-      Simple_IO.Put_Line_Err ("ts: post-Add_Info");
 
       Reset_Identifier_Prefix;
-      Simple_IO.Put_Line_Err ("ts: post-Reset_Identifier_Prefix");
       Push_Identifier_Prefix
         (Lib_Mark, Get_Identifier (Libraries.Std_Library));
-      Simple_IO.Put_Line_Err ("ts: post-Push_Prefix(Std)");
       Push_Identifier_Prefix
         (Unit_Mark, Get_Identifier (Standard_Package));
-      Simple_IO.Put_Line_Err ("ts: post-Push_Prefix(Standard)");
 
       --  With VHDL93 and later, time type is globally static.  As a result,
       --  it will be elaborated at run-time (and not statically).
@@ -2058,14 +2050,10 @@ package body Translation is
          Set_Type_Staticness (Delay_Length_Subtype_Definition, Locally);
       end if;
 
-      Simple_IO.Put_Line_Err ("ts: pre-Get_Declaration_Chain");
       Decl := Get_Declaration_Chain (Standard_Package);
-      Simple_IO.Put_Line_Err ("ts: post-Get_Declaration_Chain");
 
       pragma Assert (Decl = Boolean_Type_Declaration);
-      Simple_IO.Put_Line_Err ("ts: pre-Translate_Bool");
       Chap4.Translate_Bool_Type_Declaration (Boolean_Type_Declaration);
-      Simple_IO.Put_Line_Err ("ts: post-Translate_Bool");
       --  We need this type very early, for predefined functions.
       Std_Boolean_Type_Node :=
         Get_Ortho_Type (Boolean_Type_Definition, Mode_Value);
@@ -2074,37 +2062,24 @@ package body Translation is
 
       Std_Boolean_Array_Type :=
         New_Array_Type (Std_Boolean_Type_Node, Ghdl_Index_Type);
-      Simple_IO.Put_Line_Err ("ts: post-Std_Boolean_Array_Type");
       New_Type_Decl (Create_Identifier ("BOOLEAN_ARRAY"),
                      Std_Boolean_Array_Type);
-      Simple_IO.Put_Line_Err ("ts: post-New_Type_Decl(BOOLEAN_ARRAY)");
       Translate_Type_Implicit_Subprograms (Decl, Main);
-      Simple_IO.Put_Line_Err ("ts: post-Translate_Type_Implicit_Subprograms");
 
       pragma Assert (Decl = Bit_Type_Declaration);
-      Simple_IO.Put_Line_Err ("ts: pre-Translate_Bool(Bit)");
       Chap4.Translate_Bool_Type_Declaration (Bit_Type_Declaration);
-      Simple_IO.Put_Line_Err ("ts: post-Translate_Bool(Bit)");
       Translate_Type_Implicit_Subprograms (Decl, Main);
-      Simple_IO.Put_Line_Err ("ts: post-Translate_Type_Implicit_Subprograms(Bit)");
 
-      Simple_IO.Put_Line_Err ("ts: entering loop");
       while Decl /= Null_Iir loop
-         Simple_IO.Put_Line_Err ("ts: loop iter kind=" & Iir_Kind'Image (Get_Kind (Decl)));
          case Get_Kind (Decl) is
             when Iir_Kind_Type_Declaration =>
                Chap4.Translate_Type_Declaration (Decl);
                Translate_Type_Implicit_Subprograms (Decl, Main);
             when Iir_Kind_Anonymous_Type_Declaration =>
-               Simple_IO.Put_Line_Err ("ts:   anon id=" & Iir'Image (Decl) & " name=" & Name_Table.Image (Get_Identifier (Decl)));
                Chap4.Translate_Anonymous_Type_Declaration (Decl);
-               Simple_IO.Put_Line_Err ("ts:   anon done");
                Translate_Type_Implicit_Subprograms (Decl, Main);
-               Simple_IO.Put_Line_Err ("ts:   anon impls done");
             when Iir_Kind_Subtype_Declaration =>
-               Simple_IO.Put_Line_Err ("ts:   subtype id=" & Iir'Image (Decl) & " name=" & Name_Table.Image (Get_Identifier (Decl)));
                Chap4.Translate_Subtype_Declaration (Decl);
-               Simple_IO.Put_Line_Err ("ts:   subtype done");
                Decl := Get_Chain (Decl);
             when Iir_Kind_Attribute_Declaration =>
                Decl := Get_Chain (Decl);

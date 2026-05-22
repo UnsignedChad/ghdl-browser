@@ -3301,7 +3301,6 @@ package body Vhdl.Sem is
       Prefix: Iir;
       Name_Prefix : Iir;
    begin
-      Simple_IO.Put_Line_Err ("sem_uc: enter");
       --  LRM93 10.4
       --  A use clause achieves direct visibility of declarations that are
       --  visible by selection.
@@ -3336,9 +3335,7 @@ package body Vhdl.Sem is
             return;
       end case;
 
-      Simple_IO.Put_Line_Err ("sem_uc: pre-Sem_Denoting_Name");
       Name_Prefix := Sem_Denoting_Name (Name_Prefix);
-      Simple_IO.Put_Line_Err ("sem_uc: post-Sem_Denoting_Name");
       Set_Prefix (Name, Name_Prefix);
       Prefix := Get_Named_Entity (Name_Prefix);
       if Is_Error (Prefix) then
@@ -3384,9 +3381,7 @@ package body Vhdl.Sem is
 
       case Get_Kind (Name) is
          when Iir_Kind_Selected_Name =>
-            Simple_IO.Put_Line_Err ("sem_uc: pre-Sem_Name");
             Sem_Name (Name, True);
-            Simple_IO.Put_Line_Err ("sem_uc: post-Sem_Name");
             case Get_Kind (Get_Named_Entity (Name)) is
                when Iir_Kind_Error =>
                   --  Continue in case of error.
@@ -3504,20 +3499,13 @@ package body Vhdl.Sem is
    is
       El: Iir;
    begin
-      Simple_IO.Put_Line_Err ("sem_cc: enter");
       El := Get_Context_Items (Unit);
-      Simple_IO.Put_Line_Err ("sem_cc: got context items");
       while El /= Null_Iir loop
-         Simple_IO.Put_Line_Err ("sem_cc: loop iter, kind=" & Iir_Kind'Image (Get_Kind (El)));
          case Get_Kind (El) is
             when Iir_Kind_Use_Clause =>
-               Simple_IO.Put_Line_Err ("sem_cc: use clause");
                Sem_Use_Clause (El);
-               Simple_IO.Put_Line_Err ("sem_cc: use clause done");
             when Iir_Kind_Library_Clause =>
-               Simple_IO.Put_Line_Err ("sem_cc: library clause");
                Sem_Library_Clause (El);
-               Simple_IO.Put_Line_Err ("sem_cc: library clause done");
             when Iir_Kind_Context_Reference =>
                Sem_Context_Reference (El);
             when others =>
@@ -3628,7 +3616,6 @@ package body Vhdl.Sem is
       Old_Design_Unit : Iir_Design_Unit;
       Implicit : Implicit_Declaration_Type;
    begin
-      Simple_IO.Put_Line_Err ("sem: Semantic enter");
       --  Sanity check: can analyze either previously analyzed unit or just
       --  parsed unit.
       case Get_Date (Design_Unit) is
@@ -3639,10 +3626,8 @@ package body Vhdl.Sem is
          when Date_Obsolete =>
             Set_Date (Design_Unit, Date_Analyzing);
          when others =>
-            Simple_IO.Put_Line_Err ("sem: Internal_Error (bad date)");
             raise Internal_Error;
       end case;
-      Simple_IO.Put_Line_Err ("sem: post-date");
 
       --  If there is already a unit with the same name, mark it as being
       --  replaced.
@@ -3693,17 +3678,12 @@ package body Vhdl.Sem is
       if Get_Dependence_List (Design_Unit) = Null_Iir_List then
          Set_Dependence_List (Design_Unit, Create_Iir_List);
       end if;
-      Simple_IO.Put_Line_Err ("sem: pre-Add_Dependence");
       Add_Dependence (Std_Standard_Unit);
-      Simple_IO.Put_Line_Err ("sem: post-Add_Dependence");
 
       --  Analyze context clauses.
-      Simple_IO.Put_Line_Err ("sem: pre-Sem_Context_Clauses");
       Sem_Context_Clauses (Design_Unit);
-      Simple_IO.Put_Line_Err ("sem: post-Sem_Context_Clauses");
 
       --  Analyze the library unit.
-      Simple_IO.Put_Line_Err ("sem: pre-library-unit-case");
       if Library_Unit /= Null_Iir then
          --  Can be null_iir in case of parse error.
          case Iir_Kinds_Library_Unit (Get_Kind (Library_Unit)) is

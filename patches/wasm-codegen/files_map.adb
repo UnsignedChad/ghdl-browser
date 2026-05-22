@@ -42,15 +42,11 @@ package body Files_Map is
 
    function Get_Home_Directory return Name_Id is
    begin
-      Logging.Log_Line ("ghd: enter, Home_Dir=" & Name_Id'Image (Home_Dir));
       if Home_Dir = Null_Identifier then
-         Logging.Log_Line ("ghd: pre-Get_Current_Directory");
          declare
             Dir : constant String := Filesystem.Get_Current_Directory;
          begin
-            Logging.Log_Line ("ghd: got dir, len=" & Natural'Image (Dir'Length));
             Home_Dir := Get_Identifier (Dir);
-            Logging.Log_Line ("ghd: got Home_Dir=" & Name_Id'Image (Home_Dir));
          end;
       end if;
       return Home_Dir;

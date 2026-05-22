@@ -890,34 +890,23 @@ package body Trans.Chap3 is
       Info      : constant Type_Info_Acc := Get_Info (Def);
       Val       : O_Cnode;
    begin
-      Simple_IO.Put_Line_Err ("ccslv: enter");
-      Simple_IO.Put_Line_Err ("ccslv: Info null=" & Boolean'Image (Info = null));
-      if Info /= null then
-         Simple_IO.Put_Line_Err ("ccslv: Info.S.Kind=" & Ortho_Info_Type_Kind'Image (Info.S.Kind));
-      end if;
       if Info.S.Composite_Layout /= Null_Var
         or else Info.S.Subtype_Owner /= null
       then
-         Simple_IO.Put_Line_Err ("ccslv: already created");
          return;
       end if;
 
-      Simple_IO.Put_Line_Err ("ccslv: Type_Mode=" & Type_Mode_Type'Image (Info.Type_Mode));
       if Info.Type_Mode = Type_Mode_Static_Array
         or Info.Type_Mode = Type_Mode_Static_Record
       then
          if Global_Storage = O_Storage_External then
             Val := O_Cnode_Null;
          else
-            Simple_IO.Put_Line_Err ("ccslv: pre-Create_Static_Composite_Subtype_Layout");
             Val := Create_Static_Composite_Subtype_Layout (Def);
-            Simple_IO.Put_Line_Err ("ccslv: post-Create_Static_Composite_Subtype_Layout");
          end if;
-         Simple_IO.Put_Line_Err ("ccslv: pre-Create_Global_Const");
          Info.S.Composite_Layout := Create_Global_Const
            (Create_Identifier ("STL"),
             Info.B.Layout_Type, Global_Storage, Val);
-         Simple_IO.Put_Line_Err ("ccslv: post-Create_Global_Const");
       else
          Info.S.Composite_Layout := Create_Var
            (Create_Var_Identifier ("STL"), Info.B.Layout_Type);
@@ -1244,11 +1233,8 @@ package body Trans.Chap3 is
          end case;
       end if;
 
-      Simple_IO.Put_Line_Err ("tasd: constraint=" & Iir_Constraint'Image (Get_Constraint_State (Def)));
       if Get_Constraint_State (Def) = Fully_Constrained then
-         Simple_IO.Put_Line_Err ("tasd: bounded path");
          Translate_Bounded_Array_Subtype_Definition (Def, Parent_Type);
-         Simple_IO.Put_Line_Err ("tasd: bounded done");
       else
          --  An unconstrained array subtype.  Use same infos as base
          --  type.
@@ -2508,7 +2494,6 @@ package body Trans.Chap3 is
       Info          : Ortho_Info_Acc;
       Complete_Info : Incomplete_Type_Info_Acc;
    begin
-      Simple_IO.Put_Line_Err ("tsd: enter, kind=" & Iir_Kind'Image (Get_Kind (Def)));
       Info := Get_Info (Def);
       if Info /= null then
          case Info.Kind is
@@ -2536,14 +2521,10 @@ package body Trans.Chap3 is
             end if;
 
          when Iir_Kind_Array_Subtype_Definition =>
-            Simple_IO.Put_Line_Err ("tsd: pre-Translate_Array_Subtype_Definition");
             Translate_Array_Subtype_Definition (Def);
-            Simple_IO.Put_Line_Err ("tsd: post-Translate_Array_Subtype_Definition");
             if With_Vars
             then
-               Simple_IO.Put_Line_Err ("tsd: pre-Create_Composite_Subtype_Layout_Var");
                Create_Composite_Subtype_Layout_Var (Def, False);
-               Simple_IO.Put_Line_Err ("tsd: post-Create_Composite_Subtype_Layout_Var");
             end if;
 
          when Iir_Kind_Record_Subtype_Definition =>
