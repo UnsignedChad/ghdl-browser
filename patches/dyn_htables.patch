@@ -3,3 +3,7 @@
 <       Table_Initial => 128);
 ---
 >       Table_Low_Bound => No_Index + 1);
+27c27
+<       Wrapper_Tables.Init (HT.Els);
+---
+>       Wrapper_Tables.Init (HT.Els, 128);
