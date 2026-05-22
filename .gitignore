@@ -1,0 +1,17 @@
+# Source trees we clone — not part of this repo
+vendor/
+
+# Build outputs
+build/
+dist/
+
+# Editor / OS junk
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Misc
+*.log
+node_modules/
+testsuite/
