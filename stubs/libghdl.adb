@@ -5,6 +5,7 @@ with Libraries;
 with Name_Table; use Name_Table;
 with Flags;
 with Vhdl.Sem_Lib;
+with Vhdl.Canon;
 with Vhdl.Nodes;
 with Errorout;
 
@@ -42,6 +43,11 @@ package body Libghdl is
       Flags.Flag_Elaborate               := True;
       Flags.Flag_Elaborate_With_Outdated := True;
       Flags.Flag_Only_Elab_Warnings      := False;
+      --  Ensure canon assigns sequential P0/P1/... labels to unlabeled
+      --  concurrent statements (processes / sigassigns).  Without this,
+      --  Translate_Process_Declarations gives every unlabeled process the
+      --  same name and they collide in the WAT.
+      Vhdl.Canon.Canon_Flag_Add_Labels := True;
       if Lib_Prefix /= null and then Lib_Prefix_Len > 0 then
          declare
             Path : constant String :=

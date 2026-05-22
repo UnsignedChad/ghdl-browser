@@ -258,6 +258,15 @@ catch(e) { process.stderr.write(`options__initialize FAILED: ${e.message}\n`); p
 const stdOk = E.libraries__load_std_library(1, 0);
 if (!stdOk) { process.stderr.write('load_std_library FAILED\n'); process.exit(1); }
 E.libraries__load_work_library(1, 0);
+
+// Enable canon's auto-labeling of unlabeled concurrent statements (P0/P1/...).
+// Without this, multiple unlabeled processes in the same architecture all get
+// the same auto-name (e.g. "____PROC") and collide when emitted as wasm funcs.
+{
+  const flagAddr = E.vhdl__canon__canon_flag_add_labels.value;
+  u8()[flagAddr] = 1;
+}
+
 process.stderr.write('GHDL initialized\n');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
