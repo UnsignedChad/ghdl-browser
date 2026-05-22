@@ -1,0 +1,5 @@
+74,75c74
+<       Table_Low_Bound => No_Index + 1,
+<       Table_Initial => 128);
+---
+>       Table_Low_Bound => No_Index + 1);
