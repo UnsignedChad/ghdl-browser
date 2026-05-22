@@ -226,7 +226,7 @@ package body Ortho_Wasm is
       Ek_Call,         -- call $decl  (result on stack)
       Ek_Select,       -- select a b cond  (for abs)
       Ek_Zero,         -- i32.const 0
-      Ek_Addr_Stub,    -- placeholder for address-of (emits i32.const 0)
+      Ek_Lval_Addr,    -- address-of an L-value (emits Lval_Addr_S(arg1))
       Ek_Wrap_I32      -- i32.wrap_i64 (truncate i64 -> i32)
    );
 
@@ -298,6 +298,7 @@ package body Ortho_Wasm is
       Name_Off  : Natural := 0;
       Name_Len  : Natural := 0;
       Ret_Type  : O_Tnode := 0;
+      Idx       : Natural := 0;
       Params    : Unbounded_String;
       Locals    : Unbounded_String;
       Body_Buf  : Unbounded_String;
@@ -418,8 +419,10 @@ package body Ortho_Wasm is
                Append (Buf, "(i64.const " & I64_Img (Ent.Ival) & ")");
             when Ek_Lit_F64 =>
                Append (Buf, "(f64.const " & F64_Img (Ent.Fval) & ")");
-            when Ek_Zero | Ek_Addr_Stub =>
+            when Ek_Zero =>
                Append (Buf, "(i32.const 0)");
+            when Ek_Lval_Addr =>
+               Append (Buf, Lval_Addr_S (O_Lnode (Ent.Arg1)));
             when Ek_Local_Get =>
                Append (Buf, "(local.get $" & Get_Name (Ent.Decl) & ")");
             when Ek_Global_Get =>
@@ -1045,7 +1048,9 @@ package body Ortho_Wasm is
    function New_Address (Lvalue : O_Lnode; Atype : O_Tnode) return O_Enode is
       pragma Unreferenced (Atype);
    begin
-      return New_Expr ((Kind => Ek_Addr_Stub, others => <>));
+      return New_Expr ((Kind => Ek_Lval_Addr,
+                        Arg1 => O_Enode (Lvalue),
+                        others => <>));
    end New_Address;
 
    function New_Unchecked_Address (Lvalue : O_Lnode; Atype : O_Tnode)
@@ -1235,6 +1240,7 @@ package body Ortho_Wasm is
       Cur_Func  := (Name_Off  => Decls (Natural (Func)).Name_Off,
                     Name_Len  => Decls (Natural (Func)).Name_Len,
                     Ret_Type  => Decls (Natural (Func)).Tnode,
+                    Idx       => Decls (Natural (Func)).Idx,
                     Params    => Decls (Natural (Func)).Params,
                     Locals    => Null_Unbounded_String,
                     Body_Buf  => Null_Unbounded_String);
@@ -1302,6 +1308,13 @@ package body Ortho_Wasm is
          Append (Funcs_Buf, "    (unreachable)" & ASCII.LF);
       end if;
       Append (Funcs_Buf, "  )" & ASCII.LF);
+      --  Browser host: alias every emitted function under its GHDL Idx so
+      --  JS can look up the function passed to __ghdl_process_register as
+      --  inst.exports["f" + idx].
+      Append (Funcs_Buf,
+              "  (export """ & "f" & I64_Img (Integer_64 (Cur_Func.Idx))
+              & """ (func $" & Nam & "))" & ASCII.LF);
+
       Cur_Func.Params   := Null_Unbounded_String;
       Cur_Func.Locals   := Null_Unbounded_String;
       Cur_Func.Body_Buf := Null_Unbounded_String;
