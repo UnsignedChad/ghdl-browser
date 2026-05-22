@@ -288,6 +288,7 @@ package body Ortho_Wasm is
    ---------------------------------------------------------------------------
 
    Globals_Buf         : Unbounded_String;
+   Funcs_Buf           : Unbounded_String;
    Pending_Func_Params : Unbounded_String;
    Pending_Call_Args   : Unbounded_String;
    Debug_Func_Count    : Natural := 0;
@@ -629,6 +630,7 @@ package body Ortho_Wasm is
       Func_Count   := 0;
       In_Func      := False;
       Globals_Buf         := Null_Unbounded_String;
+      Funcs_Buf           := Null_Unbounded_String;
       Pending_Func_Params := Null_Unbounded_String;
       Put_Line ("(module");
       Put_Line ("  (import ""env"" ""__ghdl_stack2_allocate"" (func $__ghdl_stack2_allocate (param i32) (result i32)))");
@@ -646,6 +648,22 @@ package body Ortho_Wasm is
       Put_Line ("  (import ""env"" ""__ghdl_check_stack_allocation"" (func $__ghdl_check_stack_allocation (param i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_ieee_assert_failed"" (func $__ghdl_ieee_assert_failed (param i32 i32 i32 i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_i32_mod"" (func $__ghdl_i32_mod (param i32 i32) (result i32)))");
+      --  Additional GRT helpers referenced by emitted code.
+      Put_Line ("  (import ""env"" ""__ghdl_malloc0"" (func $__ghdl_malloc0 (param i32) (result i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_integer_index_check_failed"" (func $__ghdl_integer_index_check_failed (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_rti_add_package"" (func $__ghdl_rti_add_package (param i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_rti_add_top"" (func $__ghdl_rti_add_top (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_init_top_generics"" (func $__ghdl_init_top_generics))");
+      Put_Line ("  (import ""env"" ""__ghdl_process_register"" (func $__ghdl_process_register (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_sensitized_process_register"" (func $__ghdl_sensitized_process_register (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_process_add_sensitivity"" (func $__ghdl_process_add_sensitivity (param i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_create_signal_e8"" (func $__ghdl_create_signal_e8 (param i32 i32 i32) (result i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_signal_init_e8"" (func $__ghdl_signal_init_e8 (param i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_signal_add_direct_driver"" (func $__ghdl_signal_add_direct_driver (param i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_signal_name_rti"" (func $__ghdl_signal_name_rti (param i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_signal_merge_rti"" (func $__ghdl_signal_merge_rti (param i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_assert_failed"" (func $__ghdl_assert_failed (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_report"" (func $__ghdl_report (param i32 i32 i32 i32)))");
       Put_Line ("  (memory 1)");
       Put_Line ("  (global $__sp (mut i32) (i32.const 65536))");
       null;
@@ -655,7 +673,9 @@ package body Ortho_Wasm is
 
    procedure Finish is
    begin
+      --  Emit globals before functions so wat2wasm can resolve forward refs.
       Put (To_String (Globals_Buf));
+      Put (To_String (Funcs_Buf));
       Put_Line (")");
    end Finish;
 
@@ -1217,22 +1237,66 @@ package body Ortho_Wasm is
       Indent := 4;
    end Start_Subprogram_Body;
 
+   --  Strip duplicate "(param $X t)" entries from a Params string.
+   --  GHDL sometimes emits the same interface param twice via repeated
+   --  Start_*/New_Interface_Decl calls under the wasm pipeline.
+   function Dedupe_Params (P : String) return String is
+      use Ada.Strings.Unbounded;
+      Result : Unbounded_String;
+      I, J, K : Natural;
+      Token : String (1 .. 256);
+      Tlen  : Natural;
+      Seen  : Unbounded_String;
+   begin
+      I := P'First;
+      while I <= P'Last loop
+         if I + 6 <= P'Last
+           and then P (I .. I + 6) = " (param"
+         then
+            J := I;
+            --  find matching ')' (single-level, no nesting expected inside)
+            K := I + 7;
+            while K <= P'Last and then P (K) /= ')' loop
+               K := K + 1;
+            end loop;
+            if K <= P'Last then
+               Tlen := K - J + 1;
+               if Tlen <= 256 then
+                  Token (1 .. Tlen) := P (J .. K);
+                  --  Has this exact token been seen?
+                  if Index (Seen, Token (1 .. Tlen)) = 0 then
+                     Append (Result, Token (1 .. Tlen));
+                     Append (Seen, Token (1 .. Tlen) & "|");
+                  end if;
+               end if;
+               I := K + 1;
+            else
+               I := P'Last + 1;
+            end if;
+         else
+            Append (Result, P (I));
+            I := I + 1;
+         end if;
+      end loop;
+      return To_String (Result);
+   end Dedupe_Params;
+
    procedure Finish_Subprogram_Body is
       Nam : constant String := Cur_Func_Name;
       Ret : constant O_Tnode := Cur_Func.Ret_Type;
    begin
-      Put ("  (func $" & Nam);
-      Put (To_String (Cur_Func.Params));
+      Append (Funcs_Buf, "  (func $" & Nam);
+      Append (Funcs_Buf, Dedupe_Params (To_String (Cur_Func.Params)));
       if Ret /= 0 then
-         Put (" (result " & Wat_Type_Of (Ret) & ")");
+         Append (Funcs_Buf, " (result " & Wat_Type_Of (Ret) & ")");
       end if;
-      New_Line;
-      Put (To_String (Cur_Func.Locals));
-      Put (To_String (Cur_Func.Body_Buf));
+      Append (Funcs_Buf, ASCII.LF);
+      Append (Funcs_Buf, To_String (Cur_Func.Locals));
+      Append (Funcs_Buf, To_String (Cur_Func.Body_Buf));
       if Ret /= 0 then
-         Put_Line ("    (unreachable)");
+         Append (Funcs_Buf, "    (unreachable)" & ASCII.LF);
       end if;
-      Put_Line ("  )");
+      Append (Funcs_Buf, "  )" & ASCII.LF);
       Cur_Func.Params   := Null_Unbounded_String;
       Cur_Func.Locals   := Null_Unbounded_String;
       Cur_Func.Body_Buf := Null_Unbounded_String;

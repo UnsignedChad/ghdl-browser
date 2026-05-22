@@ -377,51 +377,67 @@ function cleanWat(raw) {
   const out = [];
   let inModule = false;
   const seenFuncs = new Set();
+  let funcCounter = new Map();   // for renaming duplicates
   const seenGlobals = new Set();
-  const seenLocals = new Set();
-  let currentFunc = null;
+
+  // We process line-by-line but also track paren depth WITHIN top-level funcs
+  // so we can skip an entire duplicate definition.
+  let skipDepth = 0;             // > 0 means we're inside a function being skipped
+
+  function countParens(s) {
+    // Count ( and ) outside of comments; assume one-line comments via ;;
+    const noComment = s.replace(/;;.*$/, '');
+    let open = 0, close = 0;
+    for (const c of noComment) {
+      if (c === '(') open++;
+      else if (c === ')') close++;
+    }
+    return [open, close];
+  }
 
   for (const ln of lines) {
     if (!inModule) {
       if (ln.startsWith('(module')) { inModule = true; out.push(ln); }
       continue;
     }
-    // End-of-module marker on its own line.
     if (ln === ')') { out.push(ln); break; }
 
-    // Filter debug noise lines that don't look like WAT.
     const trimmed = ln.trimStart();
-    if (trimmed === '' || trimmed.startsWith('(') || trimmed.startsWith(';;')) {
-      // dedupe top-level func / global definitions
-      const funcMatch = /^\s+\(func \$(\S+)/.exec(ln);
-      if (funcMatch) {
-        if (seenFuncs.has(funcMatch[1])) {
-          currentFunc = funcMatch[1];     // entering a duplicate; skip until close
-          continue;
-        }
-        seenFuncs.add(funcMatch[1]);
-        currentFunc = null;
-      }
-      const globMatch = /^\s+\(global \$(\S+)/.exec(ln);
-      if (globMatch) {
-        if (seenGlobals.has(globMatch[1])) continue;
-        seenGlobals.add(globMatch[1]);
-      }
-      // dedupe (local $name ...) within a kept function
-      const locMatch = /^\s+\(local \$(\S+)/.exec(ln);
-      if (locMatch && currentFunc === null) {
-        const key = (out.length - 1) + ':' + locMatch[1];
-        if (seenLocals.has(key)) continue;
-        seenLocals.add(key);
-      }
+    const looksLikeWat = trimmed === '' || trimmed.startsWith('(') ||
+                         trimmed.startsWith(';;') || trimmed.startsWith(')');
+    if (!looksLikeWat) continue;  // filter debug noise
 
-      // if we're inside a skipped duplicate func, drop until matching ')'
-      if (currentFunc !== null) {
-        if (ln.match(/^\s+\)\s*$/)) currentFunc = null;
-        continue;
-      }
-      out.push(ln);
+    // If we're inside a skipped duplicate, track depth and drop the line.
+    if (skipDepth > 0) {
+      const [o, c] = countParens(ln);
+      skipDepth += o - c;
+      continue;  // drop
     }
+
+    // Top-level (func ...) → check duplicate. Drop the duplicate entirely.
+    const funcMatch = /^  \(func \$(\S+)/.exec(ln);
+    if (funcMatch) {
+      const name = funcMatch[1];
+      if (seenFuncs.has(name)) {
+        // Start skipping the duplicate. Count parens on this header line.
+        const [o, c] = countParens(ln);
+        skipDepth = Math.max(0, o - c);
+        if (skipDepth === 0) {
+          // Single-line func, nothing more to skip; just drop this line.
+        }
+        continue;  // drop the header itself
+      }
+      seenFuncs.add(name);
+    }
+
+    // Top-level (global ...) → dedupe
+    const globMatch = /^  \(global \$(\S+)/.exec(ln);
+    if (globMatch) {
+      if (seenGlobals.has(globMatch[1])) continue;
+      seenGlobals.add(globMatch[1]);
+    }
+
+    out.push(ln);
   }
   return out.join('\n') + '\n';
 }

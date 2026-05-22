@@ -1,3 +1,4 @@
+pragma Suppress (All_Checks);
 --  Libghdl wasm32 stub body — calls real init chain.
 with Options;
 with Libraries;
@@ -5,9 +6,11 @@ with Name_Table; use Name_Table;
 with Flags;
 with Vhdl.Sem_Lib;
 with Vhdl.Nodes;
+with Errorout;
 
 with Translation;
 with Ortho_Wasm;
+with Simple_IO;
 with Vhdl.Configuration;
 
 package body Libghdl is
@@ -64,9 +67,37 @@ package body Libghdl is
 
    function Analyze_File (File : Thin_String_Ptr; Len : Natural) return Iir is
       Id : Name_Id;
+      Df : Iir;
+      Unit, Next_Unit : Iir;
    begin
       Id := Get_Identifier (File (1 .. Len));
-      return Vhdl.Sem_Lib.Load_File_Name (Id);
+      Df := Vhdl.Sem_Lib.Load_File_Name (Id);
+      if Df = Vhdl.Nodes.Null_Iir then
+         return Vhdl.Nodes.Null_Iir;
+      end if;
+
+      --  Semantically analyse each design unit and add it to the work library
+      --  so subsequent Configure / Elaborate can find it.
+      Simple_IO.Put_Line_Err ("analyze: pre-iterate");
+      Unit := Vhdl.Nodes.Get_First_Design_Unit (Df);
+      while Unit /= Vhdl.Nodes.Null_Iir loop
+         Next_Unit := Vhdl.Nodes.Get_Chain (Unit);
+         Simple_IO.Put_Line_Err ("analyze: Finish_Compilation");
+         Vhdl.Sem_Lib.Finish_Compilation (Unit, False);
+         Simple_IO.Put_Line_Err ("analyze: after Finish_Compilation, errs=" & Natural'Image (Errorout.Nbr_Errors));
+         if Errorout.Nbr_Errors = 0 then
+            Simple_IO.Put_Line_Err ("analyze: pre-Set_Chain");
+            Vhdl.Nodes.Set_Chain (Unit, Vhdl.Nodes.Null_Iir);
+            Simple_IO.Put_Line_Err ("analyze: pre-Add_Design_Unit_Into_Library");
+            Libraries.Add_Design_Unit_Into_Library (Unit);
+            Simple_IO.Put_Line_Err ("analyze: post-Add_Design_Unit_Into_Library");
+         else
+            Simple_IO.Put_Line_Err ("analyze: errors > 0, skipping add");
+         end if;
+         Unit := Next_Unit;
+      end loop;
+      Simple_IO.Put_Line_Err ("analyze: loop done");
+      return Df;
    end Analyze_File;
 
 
@@ -74,31 +105,44 @@ package body Libghdl is
      (Primary_Ptr : Thin_String_Ptr; Primary_Len : Natural;
       Secondary_Ptr : Thin_String_Ptr; Secondary_Len : Natural) return Integer
    is
-      Primary_Id   : Name_Table.Name_Id;
-      Secondary_Id : Name_Table.Name_Id;
-      Work_Id      : Name_Table.Name_Id;
+      Primary_Id   : Types.Name_Id;
+      Secondary_Id : Types.Name_Id;
+      Work_Id      : Types.Name_Id;
       Config       : Iir;
    begin
+      Simple_IO.Put_Line_Err ("Compile_Elab: enter");
       Primary_Id := Name_Table.Get_Identifier
         (Primary_Ptr (1 .. Primary_Len));
       if Secondary_Len > 0 then
          Secondary_Id := Name_Table.Get_Identifier
            (Secondary_Ptr (1 .. Secondary_Len));
       else
-         Secondary_Id := Name_Table.Null_Identifier;
+         Secondary_Id := Types.Null_Identifier;
       end if;
       Work_Id := Libraries.Work_Library_Name;
 
+      Simple_IO.Put_Line_Err ("Compile_Elab: before Configure");
       Config := Vhdl.Configuration.Configure
         (Work_Id, Primary_Id, Secondary_Id);
+      Simple_IO.Put_Line_Err ("Compile_Elab: after Configure");
       if Config = Vhdl.Nodes.Null_Iir then
+         Simple_IO.Put_Line_Err ("Compile_Elab: Config is Null_Iir");
          return -1;
       end if;
 
+      Simple_IO.Put_Line_Err ("Compile_Elab: Register_Translation_Back_End");
+      Simple_IO.Put_Line_Err ("Compile_Elab: Ortho_Wasm.Init");
+      Ortho_Wasm.Init;
+      Translation.Register_Translation_Back_End;
+      Simple_IO.Put_Line_Err ("Compile_Elab: Translation.Initialize");
       Translation.Initialize;
+      Simple_IO.Put_Line_Err ("Compile_Elab: Translation.Elaborate");
       Translation.Elaborate (Config, Whole => True);
+      Simple_IO.Put_Line_Err ("Compile_Elab: Ortho_Wasm.Finish");
       Ortho_Wasm.Finish;
+      Simple_IO.Put_Line_Err ("Compile_Elab: Translation.Finalize");
       Translation.Finalize;
+      Simple_IO.Put_Line_Err ("Compile_Elab: done");
       return 0;
    end Compile_Elab;
 
