@@ -665,6 +665,7 @@ package body Ortho_Wasm is
       Put_Line ("  (import ""env"" ""__ghdl_assert_failed"" (func $__ghdl_assert_failed (param i32 i32 i32 i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_report"" (func $__ghdl_report (param i32 i32 i32 i32)))");
       Put_Line ("  (memory 1)");
+      Put_Line ("  (export ""memory"" (memory 0))");
       Put_Line ("  (global $__sp (mut i32) (i32.const 65536))");
       null;
       Simple_IO.Put_Line_Err ( "WASM: Init done");
@@ -676,6 +677,10 @@ package body Ortho_Wasm is
       --  Emit globals before functions so wat2wasm can resolve forward refs.
       Put (To_String (Globals_Buf));
       Put (To_String (Funcs_Buf));
+      --  Export key entry points so a JS host can drive simulation.
+      --  __ghdl_ELABORATE is always emitted; the entitys *_DECL_ELAB /
+      --  *_STMT_ELAB pair is the top-level scheduler hook.
+      Put_Line ("  (export ""__ghdl_ELABORATE"" (func $__ghdl_ELABORATE))");
       Put_Line (")");
    end Finish;
 
