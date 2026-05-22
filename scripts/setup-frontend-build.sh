@@ -73,11 +73,24 @@ cp "$REPO/stubs/synthesis.adb"   "$BUILD/" 2>/dev/null || true
 
 # 9. Move excluded files
 echo "=== Moving excluded files to _excluded/ ==="
-for pat in   ghdlcomp.ad? ghdlcov.ad? ghdlcovout.ad? ghdldrv.ad? ghdllib.ad?   ghdllocal.ad? ghdl_main.ad? ghdlmain.ad? ghdlnull.ads ghdlprint.ad?   ghdlrun.ad? ghdlsimul.ad? ghdlsynth.ads ghdlverilog.ad? ghdlvpi.ad?   ghdlxml.ad? ghdl_gcc.ad? ghdl_jit.ad? ghdl_llvm.ad? ghdl_rust.ad?   ghdl_simul.ad? libghdl.ads main.ad? psl-tprint.ad?   simul-*.ad? synthesis.ads trans.ad? trans-*.ad? trans_*.ad? translation.ad?   verilog-allocates.ad? ortho_front.ad?; do
+for pat in   ghdlcomp.ad? ghdlcov.ad? ghdlcovout.ad? ghdldrv.ad? ghdllib.ad?   ghdllocal.ad? ghdl_main.ad? ghdlmain.ad? ghdlnull.ads ghdlprint.ad?   ghdlrun.ad? ghdlsimul.ad? ghdlsynth.ads ghdlverilog.ad? ghdlvpi.ad?   ghdlxml.ad? ghdl_gcc.ad? ghdl_jit.ad? ghdl_llvm.ad? ghdl_rust.ad?   ghdl_simul.ad? libghdl.ads main.ad? psl-tprint.ad?   simul-*.ad? synthesis.ads   verilog-allocates.ad?; do
   for f in "$BUILD"/$pat; do
     [[ -f "$f" ]] && mv "$f" "$BUILD/_excluded/" 2>/dev/null || true
   done
 done
+
+# 10. Install wasm-codegen patched sources (ortho_wasm + trans-*)
+echo "=== Installing wasm-codegen patched sources ==="
+if [[ -d "$REPO/patches/wasm-codegen" ]]; then
+  cp "$REPO/patches/wasm-codegen"/*.adb "$REPO/patches/wasm-codegen"/*.ads "$BUILD/" 2>/dev/null || true
+  echo "  installed $(ls $REPO/patches/wasm-codegen | wc -l) wasm-codegen files"
+fi
+# Add Compile_Elab spec
+cp "$REPO/stubs/libghdl.ads" "$BUILD/libghdl.ads" 2>/dev/null || true
+# Ortho_front.ads is referenced by some trans files but its body is excluded
+cp "$REPO/vendor/ghdl/src/ortho/ortho_front.ads" "$BUILD/" 2>/dev/null || true
+# Foreigns from ghdldrv (not vhdl/translate)
+cp "$REPO/vendor/ghdl/src/ghdldrv/foreigns.adb" "$REPO/vendor/ghdl/src/ghdldrv/foreigns.ads" "$BUILD/" 2>/dev/null || true
 
 echo ""
 echo "Build dir ready. Run:"

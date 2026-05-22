@@ -10,6 +10,9 @@ package Ada.Strings.Unbounded is
    function To_String (S : Unbounded_String) return String;
    function Length (S : Unbounded_String) return Natural;
 
+   function Index (Source : Unbounded_String;
+                   Pattern : String) return Natural;
+
    procedure Append (Source : in out Unbounded_String; New_Item : String);
    procedure Append (Source : in out Unbounded_String; New_Item : Character);
 

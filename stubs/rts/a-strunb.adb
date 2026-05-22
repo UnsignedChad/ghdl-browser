@@ -43,4 +43,20 @@ package body Ada.Strings.Unbounded is
       S (1) := New_Item;
       Append (Source, S);
    end Append;
+   function Index (Source : Unbounded_String;
+                   Pattern : String) return Natural is
+   begin
+      if Source.Buf = null or else Pattern'Length = 0 then return 0; end if;
+      if Source.Len < Pattern'Length then return 0; end if;
+      for I in 1 .. Source.Len - Pattern'Length + 1 loop
+         if Source.Buf (Source.Buf'First + I - 1
+                        .. Source.Buf'First + I - 1 + Pattern'Length - 1)
+            = Pattern
+         then
+            return I;
+         end if;
+      end loop;
+      return 0;
+   end Index;
+
 end Ada.Strings.Unbounded;
