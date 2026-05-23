@@ -5,13 +5,15 @@ and compile VHDL → sim.wasm without any server round trip.
 
 ## Status
 
-**Working end-to-end** for combinational and basic sequential designs using
-`std_logic_1164`. The compile pipeline runs entirely in the browser; the
-produced sim.wasm validates with `wat2wasm` and a small JS host can drive
-elaboration and capture signal-assignment events.
+**Compile pipeline works end-to-end** for combinational and basic sequential
+designs using `std_logic_1164`. The browser-side build does not yet match
+native `ghdl_wasm` on `IEEE.NUMERIC_STD` designs — see test results below.
+The produced sim.wasm validates with `wat2wasm`, and a small JS host can
+drive elaboration and capture signal-assignment events.
 
 ### Test results: VHDL-100-Projects Stage 1
 
+Browser: **20/26** pass.  Native `ghdl_wasm` for comparison: **26/26** pass.
 Run `scripts/ghdl_batch_test.sh` to reproduce. Each project goes through the
 full pipeline in a fresh subprocess:
 
@@ -54,13 +56,16 @@ analyze (libghdl__analyze_file)
 ━━ 20/26 pass  (6 fail) ━━
 ```
 
-22/24 single-file flat designs pass. The 6 failures cluster into two known
-issues:
+All 6 browser failures pass on native `ghdl_wasm`, so this is a real
+functional gap, not a test harness artifact:
 
-- **4** use `IEEE.NUMERIC_STD.ALL` → memory access out of bounds at compile
-  time (codegen issue)
-- **2** are structural designs whose dependencies live in other files (the
-  test harness only fetches one file per project)
+- **4** use `IEEE.NUMERIC_STD.ALL` → "memory access out of bounds" during
+  compile in the wasm-host build, but produce ~16k-line WAT natively.
+  This is the main known codegen gap.
+- **2** are structural designs (24, 25) — they reference component
+  declarations (`FullSubtractor`, `FullAdder`) defined in other files. The
+  browser batch test only fetches one file per project; native is more
+  permissive about un-bound components and still produces output.
 
 ### Execution
 
