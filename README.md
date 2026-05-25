@@ -3,6 +3,10 @@
 Port of GHDL to WebAssembly. A user's browser can now analyze, elaborate,
 and compile VHDL → sim.wasm without any server round trip.
 
+**Try it without building anything:** [vhdl.ai/vhdlive](https://vhdl.ai/vhdlive) hosts a live deployment — open in any modern browser, write VHDL, hit Simulate.
+
+> **Looking for the backend?** This repo is the *user-facing* port — it drives `analyze → elaborate → compile` inside the browser via `libghdl`. The Ada compiler backend that emits WebAssembly text (WAT) lives at **[UnsignedChad/ghdl-wasm](https://github.com/UnsignedChad/ghdl-wasm)**. Most users want *this* repo; modify *that* one only if you need to change how VHDL is lowered to WebAssembly (case statements, signal assignments, etc.).
+
 ## Status
 
 **Compile pipeline works end-to-end** for combinational and basic sequential
