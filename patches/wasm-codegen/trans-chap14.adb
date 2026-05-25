@@ -25,6 +25,7 @@ with Trans_Decls; use Trans_Decls;
 with Trans.Chap3;
 with Trans.Chap6;
 with Trans.Chap7;
+with Trans.Chap8;
 with Trans.Rtis;
 with Trans.Helpers2; use Trans.Helpers2;
 with Trans.Foreach_Non_Composite;
@@ -919,17 +920,66 @@ package body Trans.Chap14 is
       return M2E (Translate_Driving_Value (Name, Get_Type (Prefix)));
    end Translate_Driving_Value_Attribute;
 
+   function Create_String_From_Str_Len (Str_Len : Mnode) return Mnode
+   is
+      Str_Info : constant Type_Info_Acc := Get_Info (String_Type_Definition);
+      Bnd : Mnode;
+      Rng : Mnode;
+      Res : Mnode;
+   begin
+      Res := Create_Temp (Str_Info);
+      Bnd := Dv2M (Create_Temp (Str_Info.B.Bounds_Type),
+        null, Mode_Value, Str_Info.B.Bounds_Type, Str_Info.B.Bounds_Ptr_Type);
+
+      --  Assign fat pointer
+      New_Assign_Stmt
+        (M2Lp (Chap3.Get_Composite_Base (Res)),
+         New_Convert_Ov
+          (New_Value (New_Selected_Element (M2Lv (Str_Len),
+                                            Ghdl_Str_Len_Type_Str_Field)),
+           Std_String_Basep_Node));
+
+      New_Assign_Stmt
+        (M2Lp (Chap3.Get_Composite_Bounds (Res)), M2Addr (Bnd));
+
+      --  Assign range
+      Rng := Stabilize
+        (Chap3.Bounds_To_Range (Bnd, String_Type_Definition, 1));
+
+      New_Assign_Stmt
+        (M2Lv (Chap3.Range_To_Length (Rng)),
+         New_Value (New_Selected_Element (M2Lv (Str_Len),
+                                          Ghdl_Str_Len_Type_Len_Field)));
+      New_Assign_Stmt
+        (M2Lv (Chap3.Range_To_Dir (Rng)), New_Lit (Ghdl_Dir_To_Node));
+      New_Assign_Stmt
+        (M2Lv (Chap3.Range_To_Left (Rng)),
+         New_Lit (New_Signed_Literal (Std_Integer_Otype, 1)));
+      New_Assign_Stmt
+        (M2Lv (Chap3.Range_To_Right (Rng)),
+         New_Convert_Ov
+         (New_Value (New_Selected_Element (M2Lv (Str_Len),
+                                           Ghdl_Str_Len_Type_Len_Field)),
+          Std_Integer_Otype));
+
+      return Res;
+   end Create_String_From_Str_Len;
+
    function Translate_Image_Attribute (Attr : Iir) return O_Enode
    is
       Prefix_Type : constant Iir :=
         Get_Base_Type (Get_Type (Get_Prefix (Attr)));
       Pinfo       : constant Type_Info_Acc := Get_Info (Prefix_Type);
-      Res         : O_Dnode;
+      Str_Len     : Mnode;
       Subprg      : O_Dnode;
       Assoc       : O_Assoc_List;
       Conv        : O_Tnode;
    begin
-      Res := Create_Temp (Std_String_Node);
+      Str_Len := Dv2M (Create_Temp (Ghdl_Str_Len_Type_Node),
+        null, Mode_Value,
+        Ghdl_Str_Len_Type_Node,
+        Ghdl_Str_Len_Ptr_Node);
+
       Create_Temp_Stack2_Mark;
       case Type_Mode_Scalar (Pinfo.Type_Mode) is
          when Type_Mode_B1 =>
@@ -958,8 +1008,7 @@ package body Trans.Chap14 is
             Conv := Ghdl_Real_Type;
       end case;
       Start_Association (Assoc, Subprg);
-      New_Association (Assoc,
-                       New_Address (New_Obj (Res), Std_String_Ptr_Node));
+      New_Association (Assoc, M2Addr (Str_Len));
       New_Association
         (Assoc,
          New_Convert_Ov
@@ -978,7 +1027,8 @@ package body Trans.Chap14 is
             null;
       end case;
       New_Procedure_Call (Assoc);
-      return New_Address (New_Obj (Res), Std_String_Ptr_Node);
+
+      return M2Addr (Create_String_From_Str_Len (Str_Len));
    end Translate_Image_Attribute;
 
    function Translate_Value_Attribute (Attr : Iir) return O_Enode
@@ -988,6 +1038,7 @@ package body Trans.Chap14 is
       Pinfo       : constant Type_Info_Acc := Get_Info (Prefix_Type);
       Subprg      : O_Dnode;
       Assoc       : O_Assoc_List;
+      Param       : Mnode;
    begin
       case Type_Mode_Scalar (Pinfo.Type_Mode) is
          when Type_Mode_B1 =>
@@ -1007,11 +1058,11 @@ package body Trans.Chap14 is
          when Type_Mode_F64 =>
             Subprg := Ghdl_Value_F64;
       end case;
+      Param := Chap7.Translate_Expression
+        (Get_Parameter (Attr), String_Type_Definition);
+      Stabilize (Param);
       Start_Association (Assoc, Subprg);
-      New_Association
-        (Assoc,
-         Chap7.Translate_Expression (Get_Parameter (Attr),
-           String_Type_Definition));
+      Chap8.New_Association_String_Base_Len (Assoc, Param);
       case Type_Mode_Scalar (Pinfo.Type_Mode) is
          when Type_Mode_B1
             | Type_Mode_E8

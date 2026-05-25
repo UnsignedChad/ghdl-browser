@@ -47,6 +47,7 @@ with Trans.Rtis;
 with Trans.Helpers2;
 with Trans.Coverage;
 
+pragma Style_Checks (Off);
 package body Translation is
    use Trans;
    use Trans.Chap10;
@@ -390,8 +391,9 @@ package body Translation is
          Constr : O_Element_List;
       begin
          Start_Record_Type (Constr);
-         New_Record_Field (Constr, Ghdl_Str_Len_Type_Len_Field,
-                           Get_Identifier ("len"), Ghdl_Index_Type);
+         New_Record_Field
+           (Constr, Ghdl_Str_Len_Type_Len_Field,
+            Wki_Length, Ghdl_Index_Type);
          New_Record_Field
            (Constr, Ghdl_Str_Len_Type_Str_Field,
             Get_Identifier ("str"), Char_Ptr_Type);
@@ -745,7 +747,11 @@ package body Translation is
         (Interfaces, Param, Get_Identifier ("proc"), Ghdl_Ptr_Type);
       Finish_Subprogram_Decl (Interfaces, Ghdl_Finalize_Register);
 
+      Simple_IO.Put_Line_Err ( "DIAG: Translation.Initialize done");
+      null;
       Coverage.Cover_Initialize;
+      Simple_IO.Put_Line_Err ( "DIAG: Coverage.Cover_Initialize done");
+      null;
    end Initialize;
 
    procedure Create_Signal_Subprograms (Suffix          : String;
@@ -870,11 +876,22 @@ package body Translation is
       Finish_Subprogram_Decl (Interfaces, Force_Eff);
    end Create_Signal_Subprograms;
 
-   --  procedure __ghdl_image_NAME (res : std_string_ptr_node;
+   procedure Create_String_Base_Len_Params (Interfaces : in out O_Inter_List)
+   is
+      Param : O_Dnode;
+   begin
+      New_Interface_Decl
+        (Interfaces, Param, Wki_Base, Std_String_Basep_Node);
+      New_Interface_Decl
+        (Interfaces, Param, Wki_Length, Ghdl_Index_Type);
+   end Create_String_Base_Len_Params;
+
+   --  procedure __ghdl_image_NAME (res : ghdl_str_len_ptr;
    --                               val : VAL_TYPE;
    --                               rti : ghdl_rti_access);
    --
-   --  function __ghdl_value_NAME (val : std_string_ptr_node;
+   --  function __ghdl_value_NAME (base : std_string_basep;
+   --                              len : ghdl_index_type;
    --                              rti : ghdl_rti_access);
    --      return VAL_TYPE;
    procedure Create_Image_Value_Subprograms (Name : String;
@@ -890,7 +907,7 @@ package body Translation is
         (Interfaces, Get_Identifier ("__ghdl_image_" & Name),
          O_Storage_External);
       New_Interface_Decl
-        (Interfaces, Param, Get_Identifier ("res"), Std_String_Ptr_Node);
+        (Interfaces, Param, Wki_Res, Ghdl_Str_Len_Ptr_Node);
       New_Interface_Decl
         (Interfaces, Param, Wki_Val, Val_Type);
       if Has_Td then
@@ -902,8 +919,7 @@ package body Translation is
       Start_Function_Decl
         (Interfaces, Get_Identifier ("__ghdl_value_" & Name),
          O_Storage_External, Val_Type);
-      New_Interface_Decl
-        (Interfaces, Param, Wki_Val, Std_String_Ptr_Node);
+      Create_String_Base_Len_Params (Interfaces);
       if Has_Td then
          New_Interface_Decl
            (Interfaces, Param, Get_Identifier ("rti"), Rtis.Ghdl_Rti_Access);
@@ -947,7 +963,7 @@ package body Translation is
       Finish_Subprogram_Decl (Interfaces, Subprg);
    end Create_Std_Ulogic_Array_Match_Subprogram;
 
-   --  procedure NAME (res : std_string_ptr_node;
+   --  procedure NAME (res : ghdl_str_len_ptr_node;
    --                  val : VAL_TYPE;
    --                  ARG2_NAME : ARG2_TYPE);
    procedure Create_To_String_Subprogram (Name : String;
@@ -964,7 +980,7 @@ package body Translation is
       Start_Procedure_Decl
         (Interfaces, Get_Identifier (Name), O_Storage_External);
       New_Interface_Decl
-        (Interfaces, Param, Wki_Res, Std_String_Ptr_Node);
+        (Interfaces, Param, Wki_Res, Ghdl_Str_Len_Ptr_Node);
       New_Interface_Decl
         (Interfaces, Param, Wki_Val, Val_Type);
       if Arg2_Type /= O_Tnode_Null then
@@ -981,6 +997,7 @@ package body Translation is
    --  Do internal declarations that need std.standard declarations.
    procedure Post_Initialize
    is
+      Id : O_Ident;
       Interfaces : O_Inter_List;
       Rec : O_Element_List;
       Param : O_Dnode;
@@ -992,6 +1009,7 @@ package body Translation is
       Info := Get_Info (String_Type_Definition);
       Std_String_Node := Info.Ortho_Type (Mode_Value);
       Std_String_Ptr_Node := Info.Ortho_Ptr_Type (Mode_Value);
+      Std_String_Basep_Node := Info.B.Base_Ptr_Type (Mode_Value);
 
       Std_Integer_Otype :=
         Get_Ortho_Type (Integer_Type_Definition, Mode_Value);
@@ -1017,8 +1035,7 @@ package body Translation is
          begin
             Start_Procedure_Decl
               (Interfaces, Get_Identifier (Name), O_Storage_External);
-            New_Interface_Decl
-              (Interfaces, Param, Get_Identifier ("msg"), Std_String_Ptr_Node);
+            Create_String_Base_Len_Params (Interfaces);
             New_Interface_Decl
               (Interfaces, Param, Get_Identifier ("severity"),
                Get_Ortho_Type (Severity_Level_Type_Definition, Mode_Value));
@@ -1070,9 +1087,12 @@ package body Translation is
       --    line : ghdl_i32;
       --    val : standard_integer;
       --    rng : integer_range_ptr);
-      Start_Procedure_Decl
-        (Interfaces, Get_Identifier ("__ghdl_integer_index_check_failed"),
-         O_Storage_External);
+      if Flag_Integer_64 then
+         Id := Get_Identifier ("__ghdl_integer_64_index_check_failed");
+      else
+         Id := Get_Identifier ("__ghdl_integer_32_index_check_failed");
+      end if;
+      Start_Procedure_Decl (Interfaces, Id, O_Storage_External);
       New_Interface_Decl (Interfaces, Param, Wki_Filename, Char_Ptr_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Line, Ghdl_I32_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Val, Std_Integer_Otype);
@@ -1092,10 +1112,10 @@ package body Translation is
 
       --  function __ghdl_text_read_length (file : __ghdl_file_index;
       --                                    str : std_string_ptr)
-      --     return std__standard_integer;
+      --     return __ghdl_index_type;
       Start_Function_Decl
         (Interfaces, Get_Identifier ("__ghdl_text_read_length"),
-         O_Storage_External, Std_Integer_Otype);
+         O_Storage_External, Ghdl_Index_Type);
       New_Interface_Decl (Interfaces, Param, Get_Identifier ("file"),
                           Ghdl_File_Index_Type);
       New_Interface_Decl (Interfaces, Param, Get_Identifier ("str"),
@@ -1131,9 +1151,13 @@ package body Translation is
       --  function __ghdl_real_exp (left : std__standard__real;
       --                            right : std__standard__integer)
       --   return std__standard__real;
+      if Flag_Integer_64 then
+         Id := Get_Identifier ("__ghdl_real_exp_64");
+      else
+         Id := Get_Identifier ("__ghdl_real_exp_32");
+      end if;
       Start_Function_Decl
-        (Interfaces, Get_Identifier ("__ghdl_real_exp"), O_Storage_External,
-         Std_Real_Otype);
+        (Interfaces, Id, O_Storage_External, Std_Real_Otype);
       New_Interface_Decl (Interfaces, Param, Wki_Left, Std_Real_Otype);
       New_Interface_Decl (Interfaces, Param, Wki_Right, Std_Integer_Otype);
       Finish_Subprogram_Decl (Interfaces, Ghdl_Real_Exp);
@@ -1141,9 +1165,13 @@ package body Translation is
       --  function __ghdl_i32_exp (left : ghdl_i32;
       --                           right : std__standard__integer)
       --   return ghdl_i32;
+      if Flag_Integer_64 then
+         Id := Get_Identifier ("__ghdl_i32_exp_64");
+      else
+         Id := Get_Identifier ("__ghdl_i32_exp_32");
+      end if;
       Start_Function_Decl
-        (Interfaces, Get_Identifier ("__ghdl_i32_exp"), O_Storage_External,
-         Ghdl_I32_Type);
+        (Interfaces, Id, O_Storage_External, Ghdl_I32_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Left, Ghdl_I32_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Right, Std_Integer_Otype);
       Finish_Subprogram_Decl (Interfaces, Ghdl_I32_Exp);
@@ -1151,9 +1179,13 @@ package body Translation is
       --  function __ghdl_i64_exp (left : ghdl_i64;
       --                           right : std__standard__integer)
       --   return ghdl_i64;
+      if Flag_Integer_64 then
+         Id := Get_Identifier ("__ghdl_i64_exp_64");
+      else
+         Id := Get_Identifier ("__ghdl_i64_exp_32");
+      end if;
       Start_Function_Decl
-        (Interfaces, Get_Identifier ("__ghdl_i64_exp"), O_Storage_External,
-         Ghdl_I64_Type);
+        (Interfaces, Id, O_Storage_External, Ghdl_I64_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Left, Ghdl_I64_Type);
       New_Interface_Decl (Interfaces, Param, Wki_Right, Std_Integer_Otype);
       Finish_Subprogram_Decl (Interfaces, Ghdl_I64_Exp);
@@ -1545,7 +1577,7 @@ package body Translation is
       --  function __ghdl_create_signal_e8 (init_val : ghdl_i32_type)
       --                                    return __ghdl_signal_ptr;
       --  procedure __ghdl_signal_simple_assign_e8 (sign : __ghdl_signal_ptr;
-      --                                            val : __ghdl_integer);
+      --                                            val : __ghdl_XX);
       Create_Signal_Subprograms ("e8", Ghdl_I32_Type,
                                  Ghdl_Create_Signal_E8,
                                  Ghdl_Signal_Init_E8,
@@ -1561,7 +1593,7 @@ package body Translation is
       --  function __ghdl_create_signal_e32 (init_val : ghdl_i32_type)
       --                                     return __ghdl_signal_ptr;
       --  procedure __ghdl_signal_simple_assign_e32 (sign : __ghdl_signal_ptr;
-      --                                             val : __ghdl_integer);
+      --                                             val : __ghdl_XX);
       Create_Signal_Subprograms ("e32", Ghdl_I32_Type,
                                  Ghdl_Create_Signal_E32,
                                  Ghdl_Signal_Init_E32,
@@ -1925,7 +1957,7 @@ package body Translation is
          Ghdl_Real_Type, Ghdl_I32_Type, Get_Identifier ("nbr_digits"));
       Create_To_String_Subprogram
         ("__ghdl_to_string_f64_format", Ghdl_To_String_F64_Format,
-         Ghdl_Real_Type, Std_String_Ptr_Node, Get_Identifier ("format"));
+         Ghdl_Real_Type, Ghdl_Str_Len_Ptr_Node, Get_Identifier ("format"));
       declare
          Bv_Base_Ptr : constant O_Tnode :=
            Get_Info (Bit_Vector_Type_Definition).B.Base_Ptr_Type (Mode_Value);
@@ -1998,13 +2030,29 @@ package body Translation is
          if Get_Kind (Decl) in Iir_Kinds_Subprogram_Declaration
            and then Is_Implicit_Subprogram (Decl)
          then
+            Simple_IO.Put_Line_Err (
+               "TTIS: spec " & Iir_Predefined_Functions'Image (
+                  Get_Implicit_Definition (Decl)));
+            null;
             Chap7.Translate_Implicit_Subprogram_Spec (Decl, Infos);
+            Simple_IO.Put_Line_Err ( "TTIS: body");
+            null;
             Chap7.Translate_Implicit_Subprogram_Body (Decl);
+            Simple_IO.Put_Line_Err ( "TTIS: done");
+            null;
+            Simple_IO.Put_Line_Err ( "TTIS: get_chain");
+            null;
             Decl := Get_Chain (Decl);
+            Simple_IO.Put_Line_Err ( "TTIS: loop_top");
+            null;
          else
+            Simple_IO.Put_Line_Err ( "TTIS: non-implicit, exiting loop");
+            null;
             exit;
          end if;
       end loop;
+      Simple_IO.Put_Line_Err ( "TTIS: loop_done");
+      null;
    end Translate_Type_Implicit_Subprograms;
 
    procedure Translate_Standard (Main : Boolean)
@@ -2016,8 +2064,11 @@ package body Translation is
       Time_Type_Staticness : Iir_Staticness;
       Time_Subtype_Staticness : Iir_Staticness;
    begin
+      Simple_IO.Put_Line_Err ( "TS: Update_Node_Infos");
+      null;
       Update_Node_Infos;
-
+      Simple_IO.Put_Line_Err ( "TS: New_Debug_Comment_Decl");
+      null;
       New_Debug_Comment_Decl ("package std.standard");
       if Main then
          Gen_Filename (Std_Standard_File);
@@ -2052,6 +2103,10 @@ package body Translation is
 
       Decl := Get_Declaration_Chain (Standard_Package);
 
+      --  The first (and one of the most important) declaration is the
+      --  boolean type declaration.
+      Simple_IO.Put_Line_Err ( "TS: Translate_Bool_Type_Declaration");
+      null;
       pragma Assert (Decl = Boolean_Type_Declaration);
       Chap4.Translate_Bool_Type_Declaration (Boolean_Type_Declaration);
       --  We need this type very early, for predefined functions.
@@ -2066,20 +2121,44 @@ package body Translation is
                      Std_Boolean_Array_Type);
       Translate_Type_Implicit_Subprograms (Decl, Main);
 
+      --  Second declaration: bit.
       pragma Assert (Decl = Bit_Type_Declaration);
       Chap4.Translate_Bool_Type_Declaration (Bit_Type_Declaration);
       Translate_Type_Implicit_Subprograms (Decl, Main);
 
+      --  Nothing special for other declarations.
       while Decl /= Null_Iir loop
+         Simple_IO.Put_Line_Err (
+            "TS: loop kind=" & Iir_Kind'Image (Get_Kind (Decl))
+            & " " & Name_Table.Image (Get_Identifier (Decl)));
+         null;
          case Get_Kind (Decl) is
             when Iir_Kind_Type_Declaration =>
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Type_Declaration");
+               null;
                Chap4.Translate_Type_Declaration (Decl);
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Type_Declaration done");
+               null;
                Translate_Type_Implicit_Subprograms (Decl, Main);
             when Iir_Kind_Anonymous_Type_Declaration =>
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Anon_Type_Declaration");
+               null;
                Chap4.Translate_Anonymous_Type_Declaration (Decl);
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Anon_Type_Declaration done");
+               null;
                Translate_Type_Implicit_Subprograms (Decl, Main);
             when Iir_Kind_Subtype_Declaration =>
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Subtype_Declaration");
+               null;
                Chap4.Translate_Subtype_Declaration (Decl);
+               Simple_IO.Put_Line_Err (
+                  "TS: Translate_Subtype_Declaration done");
+               null;
                Decl := Get_Chain (Decl);
             when Iir_Kind_Attribute_Declaration =>
                Decl := Get_Chain (Decl);

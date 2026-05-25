@@ -1,5 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
 --  Iir to ortho translator.
 --  Copyright (C) 2002 - 2014 Tristan Gingold
 --
@@ -86,7 +85,9 @@ package body Trans.Chap2 is
    procedure Translate_Interface_Mechanism (Inter : Iir)
    is
       Spec : constant Iir := Get_Parent (Inter);
-      pragma Assert (Get_Kind (Spec) in Iir_Kinds_Subprogram_Declaration);
+      pragma Assert (Get_Kind (Spec) in Iir_Kinds_Subprogram_Declaration
+        or else
+        Get_Kind (Spec) in Iir_Kinds_Subprogram_Instantiation_Declaration);
       Info : constant Interface_Info_Acc := Get_Info (Inter);
       Tinfo : constant Type_Info_Acc := Get_Info (Get_Type (Inter));
       Mech : Call_Mechanism;
@@ -114,7 +115,7 @@ package body Trans.Chap2 is
             | Iir_Kind_Interface_View_Declaration =>
             Info.Interface_Mechanism (Mode_Signal) := Mech;
             --  Values are always passed by address.
-            if Get_Kind (Spec) = Iir_Kind_Procedure_Declaration then
+            if Is_Procedure_Declaration (Spec) then
                Mech := Pass_By_Address;
             end if;
             Info.Interface_Mechanism (Mode_Value) := Mech;
@@ -145,7 +146,12 @@ package body Trans.Chap2 is
       El_List : O_Element_List;
       Param_Info : Ortho_Info_Acc;
    begin
+      --  Set the identifier prefix with the subprogram identifier and
+      --  overload number if any.
       Push_Subprg_Identifier (Spec, Mark);
+
+      --  Translate generic constants (for subprogram instantiations)
+      Chap4.Translate_Generic_Chain (Spec);
 
       --  Translate interface types.
       Inter := Get_Interface_Declaration_Chain (Spec);
@@ -154,7 +160,7 @@ package body Trans.Chap2 is
          Inter := Get_Chain (Inter);
       end loop;
 
-      if Get_Kind (Spec) = Iir_Kind_Procedure_Declaration then
+      if Is_Procedure_Declaration (Spec) then
          --  Create the param record (except for foreign subprogram).
          Info := Get_Info (Spec);
          Inter := Get_Interface_Declaration_Chain (Spec);
@@ -222,8 +228,7 @@ package body Trans.Chap2 is
    is
       use Vhdl.Back_End;
       Info : constant Subprg_Info_Acc := Get_Info (Spec);
-      Is_Func : constant Boolean :=
-        Get_Kind (Spec) = Iir_Kind_Function_Declaration;
+      Is_Func : constant Boolean := Is_Function_Declaration (Spec);
       Is_Foreign : constant Boolean := Get_Foreign_Flag (Spec);
       Inter : Iir;
       Param_Info : Ortho_Info_Acc;
@@ -310,6 +315,7 @@ package body Trans.Chap2 is
             Param_Info := Add_Info (Inter, Kind_Interface);
             Translate_Interface_Mechanism (Inter);
 
+            --  TODO: for intrinsic, pass strings as base + len.
             Arg_Type := Translate_Interface_Type (Inter, Mode_Value);
             New_Interface_Decl
               (Interface_List, Param_Info.Interface_Decl (Mode_Value),
@@ -411,7 +417,8 @@ package body Trans.Chap2 is
       --  True if the subprogram is suspendable (can be true only for
       --  procedures).
       Has_Suspend : constant Boolean :=
-        Get_Kind (Spec) = Iir_Kind_Procedure_Declaration
+        Kind_In (Spec, Iir_Kind_Procedure_Declaration,
+                       Iir_Kind_Procedure_Instantiation_Declaration)
         and then Get_Suspend_Flag (Spec);
 
       --  True if the subprogram is translated to a function in ortho.
@@ -441,6 +448,14 @@ package body Trans.Chap2 is
    begin
       --  Do not translate body for foreign subprograms.
       if Get_Foreign_Flag (Spec) then
+         return;
+      end if;
+
+      --  A macro-expanded generic subprogram.
+      --  Only the expanded subprograms will be translated.
+      if Get_Kind (Spec) in Iir_Kinds_Subprogram_Declaration
+        and then Get_Macro_Expand_Flag (Spec)
+      then
          return;
       end if;
 
@@ -689,7 +704,7 @@ package body Trans.Chap2 is
 
       if Has_Suspend or Final or Is_Prot then
          --  Create a barrier to catch missing return statement.
-         if Get_Kind (Spec) = Iir_Kind_Procedure_Declaration then
+         if Is_Procedure_Declaration (Spec) then
             if Has_Suspend then
                Chap8.State_Jump (Chap8.State_Return);
             else
@@ -1067,6 +1082,9 @@ package body Trans.Chap2 is
    is
       Is_Nested : constant Boolean := Is_Nested_Package (Bod);
       Spec      : constant Iir_Package_Declaration := Get_Package (Bod);
+
+      --  True if the package spec is a package declaration.  It could be a
+      --  package instantiation declaration.
       Is_Spec_Decl : constant Boolean :=
         Get_Kind (Spec) = Iir_Kind_Package_Declaration;
 
@@ -1078,12 +1096,17 @@ package body Trans.Chap2 is
          return;
       end if;
 
+      --  Translate declarations.
       if Is_Spec_Decl and then Is_Uninstantiated_Package (Spec) then
          Push_Package_Instance_Factory (Spec);
+
+         --  Translate the specifications.
          Chap4.Translate_Declaration_Chain (Bod);
+
          Pop_Package_Instance_Factory (Spec);
       else
          Restore_Local_Identifier (Info.Package_Local_Id);
+
          Chap4.Translate_Declaration_Chain (Bod);
       end if;
 
@@ -1111,6 +1134,8 @@ package body Trans.Chap2 is
       end if;
 
       if not Is_Nested then
+         --  Translate subprograms.  For nested package, this has to be called
+         --  when translating subprograms.
          Chap4.Translate_Declaration_Chain_Subprograms
            (Bod, Subprg_Translate_Spec_And_Body);
       end if;
@@ -1408,6 +1433,7 @@ package body Trans.Chap2 is
             Dest.all :=
               (Kind => Kind_Alias,
                Mark => False,
+               Alias_Direct => Src.Alias_Direct,
                Alias_Var => (Mode_Value =>
                                Instantiate_Var (Src.Alias_Var (Mode_Value)),
                              Mode_Signal =>
@@ -1506,6 +1532,7 @@ package body Trans.Chap2 is
                          Field_Node => Src.Field_Node,
                          Field_Bound => Src.Field_Bound);
          when Kind_Component =>
+            Dest.Comp_Scope := Instantiate_Var_Scope (Src.Comp_Scope);
             Dest.all :=
               (Kind => Kind_Component,
                Mark => False,
@@ -1513,6 +1540,8 @@ package body Trans.Chap2 is
                Comp_Ptr_Type => Src.Comp_Ptr_Type,
                Comp_Link => Src.Comp_Link,
                Comp_Rti_Const => Src.Comp_Rti_Const);
+            Push_Instantiate_Var_Scope
+              (Dest.Comp_Scope'Access, Src.Comp_Scope'Access);
          when Kind_Package =>
             Dest.all :=
               (Kind => Kind_Package,
@@ -1554,6 +1583,8 @@ package body Trans.Chap2 is
                when others =>
                   null;
             end case;
+         when Kind_Component =>
+            Pop_Instantiate_Var_Scope (Info.Comp_Scope'Access);
          when Kind_Package_Instance =>
             --  The order is important: it must be the reverse order of the
             --  push.
@@ -1887,9 +1918,36 @@ package body Trans.Chap2 is
    end Translate_Package_Instantiation_Declaration;
 
    procedure Translate_Package_Instantiation_Declaration_Subprograms
-     (Inst : Iir; What : Subprg_Translate_Kind) is
+     (Inst : Iir; What : Subprg_Translate_Kind)
+   is
+      Inter : Iir;
    begin
       if Get_Macro_Expand_Flag (Get_Uninstantiated_Package_Decl (Inst)) then
+         if What in Subprg_Translate_Spec then
+            --  Copy info to the interface subprogram so that the interface
+            --  subprogram can be called directly.
+            Inter := Get_Generic_Chain (Inst);
+            while Inter /= Null_Iir loop
+               if Get_Kind (Inter)
+                 in Iir_Kinds_Interface_Subprogram_Declaration
+               then
+                  declare
+                     Orig : constant Iir := Get_Associated_Subprogram (Inter);
+                     Orig_Inter, Inst_Inter : Iir;
+                  begin
+                     Inst_Inter := Get_Interface_Declaration_Chain (Inter);
+                     Orig_Inter := Get_Interface_Declaration_Chain (Orig);
+                     while Inst_Inter /= Null_Iir loop
+                        Set_Info (Inst_Inter, Get_Info (Orig_Inter));
+                        Inst_Inter := Get_Chain (Inst_Inter);
+                        Orig_Inter := Get_Chain (Orig_Inter);
+                     end loop;
+                  end;
+               end if;
+               Inter := Get_Chain (Inter);
+            end loop;
+         end if;
+
          declare
             Bod : constant Iir := Get_Instance_Package_Body (Inst);
             Mark  : Id_Mark_Type;

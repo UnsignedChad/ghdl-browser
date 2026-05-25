@@ -194,6 +194,11 @@ package body Trans.Chap9 is
 
       if Is_Component_Instantiation (Inst) then
          Ports := Get_Named_Entity (Get_Instantiated_Unit (Inst));
+         if Get_Macro_Expand_Flag (Ports) then
+            --  Get the macro-expanded component.
+            Ports := Get_Instantiated_Header (Inst);
+            Chap4.Translate_Component_Declaration (Ports);
+         end if;
       else
          Ports := Get_Entity_From_Entity_Aspect (Get_Instantiated_Unit (Inst));
       end if;
@@ -552,7 +557,7 @@ package body Trans.Chap9 is
       Instance   : O_Dnode;
       Pass       : O_Dnode;
       Loc        : O_Dnode;
-      Msg_Var    : O_Dnode;
+      Msg_Var    : Mnode;
       Blk        : O_If_Block;
       Expr       : Iir;
       Assocs     : O_Assoc_List;
@@ -567,26 +572,23 @@ package body Trans.Chap9 is
 
       Start_Subprogram_Body (Proc);
       Push_Local_Factory;
+      Open_Temp;
       --  Push scope for architecture declarations.
       Set_Scope_Via_Param_Ptr (Base.Block_Scope, Instance);
 
       Loc := Chap4.Get_Location (Stmt);
-      New_Var_Decl (Msg_Var, Get_Identifier ("msg"), O_Storage_Local,
-                    Std_String_Ptr_Node);
       Expr := Get_Report_Expression (Stmt);
       if Expr = Null_Iir then
-         New_Assign_Stmt (New_Obj (Msg_Var),
-                          New_Lit (New_Null_Access (Std_String_Ptr_Node)));
+         Msg_Var := Mnode_Null;
       else
-         New_Assign_Stmt
-           (New_Obj (Msg_Var),
-            Chap7.Translate_Expression (Expr, String_Type_Definition));
+         Msg_Var := Chap7.Translate_Expression (Expr, String_Type_Definition);
+         Stabilize (Msg_Var);
       end if;
 
       Start_If_Stmt (Blk, New_Obj_Value (Pass));
 
       Start_Association (Assocs, Ghdl_Psl_Cover);
-      New_Association (Assocs, New_Obj_Value (Msg_Var));
+      Chap8.New_Association_String_Base_Len (Assocs, Msg_Var);
       New_Association (Assocs, New_Lit (Get_Ortho_Literal
                                           (Severity_Level_Note)));
       New_Association (Assocs, New_Address (New_Obj (Loc),
@@ -596,7 +598,7 @@ package body Trans.Chap9 is
       New_Else_Stmt (Blk);
 
       Start_Association (Assocs, Ghdl_Psl_Cover_Failed);
-      New_Association (Assocs, New_Obj_Value (Msg_Var));
+      Chap8.New_Association_String_Base_Len (Assocs, Msg_Var);
       New_Association (Assocs, New_Lit (Get_Ortho_Literal
                                           (Severity_Level_Warning)));
       New_Association (Assocs, New_Address (New_Obj (Loc),
@@ -606,6 +608,7 @@ package body Trans.Chap9 is
       Finish_If_Stmt (Blk);
 
       Clear_Scope (Base.Block_Scope);
+      Close_Temp;
       Pop_Local_Factory;
       Finish_Subprogram_Body;
    end Translate_Psl_Report;
@@ -1360,24 +1363,27 @@ package body Trans.Chap9 is
             when Iir_Kind_Component_Instantiation_Statement =>
                declare
                   Hdr : constant Iir := Get_Instantiated_Header (Stmt);
+                  Ent : Iir;
                begin
                   if Hdr /= Null_Iir
                     and then Get_Kind (Hdr) = Iir_Kind_Entity_Declaration
                     and then Get_Macro_Expand_Flag (Hdr)
                     and then Get_Parent (Hdr) /= Null_Iir
                   then
+                     Ent := Hdr;
                      Chap1.Translate_Entity_Subprograms (Hdr);
+                  else
+                     Ent := Get_Entity_From_Entity_Aspect
+                       (Get_Instantiated_Unit (Stmt));
+                  end if;
+
+                  Chap4.Translate_Association_Subprograms
+                    (Stmt, Block, Base_Block, Ent);
+                  if Flag_Elaboration then
+                     Translate_Component_Instantiation_Subprogram
+                       (Stmt, Base_Info);
                   end if;
                end;
-
-               Chap4.Translate_Association_Subprograms
-                 (Stmt, Block, Base_Block,
-                  Get_Entity_From_Entity_Aspect
-                    (Get_Instantiated_Unit (Stmt)));
-               if Flag_Elaboration then
-                  Translate_Component_Instantiation_Subprogram
-                    (Stmt, Base_Info);
-               end if;
             when Iir_Kind_Block_Statement =>
                declare
                   Guard : constant Iir := Get_Guard_Decl (Stmt);
@@ -2269,6 +2275,16 @@ package body Trans.Chap9 is
       else
          Arch_Info := null;
       end if;
+
+      --  When the architecture has not been translated (Arch_Info = null),
+      --  we can only refer to it through external declarations and we have
+      --  no usable Config_Subprg.  Discard the configuration in that case
+      --  so the external-decl path below treats it like an unconfigured
+      --  instance.  This is required for simul-driven elaboration of large
+      --  designs where not every architecture body is in Elab_Units.
+      if Arch_Info = null then
+         Config := Null_Iir;
+      end if;
       if Arch_Info = null or Config = Null_Iir then
          declare
             function Get_Arch_Name return String is
@@ -2323,11 +2339,10 @@ package body Trans.Chap9 is
       end if;
 
       if Arch_Info = null then
-         if Config /= Null_Iir then
-            --  Architecture is unknown, but we know how to configure
-            --  the block inside it.
-            raise Internal_Error;
-         end if;
+         --  Architecture not translated.  Config has been forced to null
+         --  above, so the external Arch_Elab/DEFAULT_CONFIG decls are
+         --  already emitted.  Nothing more to set up here.
+         null;
       else
          Instance_Size := Arch_Info.Block_Instance_Size;
          Arch_Elab := Arch_Info.Block_Elab_Subprg;
@@ -2490,6 +2505,9 @@ package body Trans.Chap9 is
          Info        : constant Block_Info_Acc := Get_Info (Bod);
          Var         : O_Dnode;
       begin
+         if Info = null then
+            return;
+         end if;
          Var := Create_Temp (Info.Block_Decls_Ptr_Type);
 
          New_Assign_Stmt
@@ -2716,6 +2734,9 @@ package body Trans.Chap9 is
          Info : constant Block_Info_Acc := Get_Info (Bod);
          Var : O_Dnode;
       begin
+         if Info = null then
+            return;
+         end if;
          Start_Choice (Case_Blk);
          New_Expr_Choice
            (Case_Blk, New_Index_Lit (Unsigned_64 (Info.Block_Id)));

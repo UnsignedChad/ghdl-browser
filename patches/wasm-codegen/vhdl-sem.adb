@@ -16,7 +16,6 @@ pragma Suppress (All_Checks);
 --  along with this program.  If not, see <gnu.org/licenses>.
 
 with Errorout; use Errorout;
-with Simple_IO;
 with Libraries;
 with Std_Names;
 with Flags; use Flags;
@@ -263,6 +262,7 @@ package body Vhdl.Sem is
             end if;
          when Iir_Kind_Signal_Declaration
            | Iir_Kind_Interface_Signal_Declaration
+           | Iir_Kind_Interface_View_Declaration
            | Iir_Kind_Guard_Signal_Declaration
            | Iir_Kind_External_Signal_Name =>
             null;
@@ -374,7 +374,11 @@ package body Vhdl.Sem is
       --  If the formal can have sources and is guarded, but the actual is
       --  not guarded (or has not the same kind of guard), signals cannot
       --  be collapsed.
-      if (Get_Guarded_Signal_Flag (Formal_Base)
+      if Get_Kind (Actual_Base) = Iir_Kind_Interface_View_Declaration then
+         if Get_Guarded_Signal_Flag (Formal_Base) then
+            return False;
+         end if;
+      elsif (Get_Guarded_Signal_Flag (Formal_Base)
             /= Get_Guarded_Signal_Flag (Actual_Base))
         or else (Get_Signal_Kind (Formal_Base)
                    /= Get_Signal_Kind (Actual_Base))
@@ -502,6 +506,94 @@ package body Vhdl.Sem is
       Res := Sem_Generic_Association_Chain (Inter_Parent, Assoc_Parent);
    end Sem_Generic_Association_Chain;
 
+   function Get_Slice_Range_Staticness (Slice : Iir) return Iir_Staticness
+   is
+      Suffix : constant Iir := Get_Suffix (Slice);
+   begin
+      case Get_Kind (Suffix) is
+         when Iir_Kinds_Denoting_Name =>
+            return Get_Type_Staticness (Get_Type (Suffix));
+         when Iir_Kinds_Scalar_Subtype_Definition =>
+            return Get_Type_Staticness (Suffix);
+         when Iir_Kind_Range_Expression
+           | Iir_Kind_Range_Array_Attribute
+           | Iir_Kind_Reverse_Range_Array_Attribute =>
+            return Get_Expr_Staticness (Suffix);
+         when others =>
+            return Unknown;
+      end case;
+   end Get_Slice_Range_Staticness;
+
+   --  LRM08 6.5.6.3 Port clauses
+   --  If a formal signal port of mode IN is associated with an expression
+   --  that is not globally static and the formal is of an unconstrained or
+   --  partially constrained composite type requiring determination of index
+   --  ranges from the actual according to the rules of 5.3.2.2, then the
+   --  expression shall be one of the following:
+   procedure Check_Inertial_Association_Expr (Expr : Iir) is
+   begin
+      case Get_Kind (Expr) is
+         when Iir_Kinds_Denoting_Name =>
+            --  - The name of an object whose subtype is globally static
+            if Get_Type_Staticness (Get_Type (Expr)) = None then
+               Error_Msg_Sem
+                 (+Expr,
+                 "type of name must be static for this inertial association");
+            end if;
+         when Iir_Kind_Indexed_Name =>
+            --  - An indexed name whose prefix is one of the members of this
+            --    list
+            Check_Inertial_Association_Expr (Get_Prefix (Expr));
+         when Iir_Kind_Slice_Name =>
+            --  - A slice name whose prefix is one of the members of this list
+            --    and whose discrete range is a globally static discrete range
+            if Get_Slice_Range_Staticness (Expr) = None then
+               Error_Msg_Sem
+                 (+Expr,
+                  "range of slice must be static "
+                  & "for this inertial association");
+               return;
+            end if;
+            Check_Inertial_Association_Expr (Get_Prefix (Expr));
+         when Iir_Kind_Aggregate =>
+            --  - An aggregate, provided all choices are locally static and
+            --    all expressions in element associations are expressions
+            --    described in this list
+            --  TODO: this is a shortcut.
+            if Get_Type_Staticness (Get_Type (Expr)) = None then
+               Error_Msg_Sem
+                 (+Expr, "aggregate choices must be locally static "
+                 & "for this inertial association");
+            end if;
+         when Iir_Kind_Function_Call =>
+            --  - A function call whose return type mark denotes a globally
+            --    static subtype
+            if Get_Type_Staticness (Get_Type (Expr)) = None then
+               Error_Msg_Sem
+                 (+Expr, "type of function call must be static "
+                 & "for this inertial association");
+            end if;
+         when Iir_Kind_Qualified_Expression
+           | Iir_Kind_Type_Conversion =>
+            --  - A qualified expression or type conversion whose type mark
+            --    denotes a globally static subtype
+            if Get_Type_Staticness (Get_Type (Expr)) < Globally then
+               Error_Msg_Sem
+                 (+Expr,
+                 "type mark must be static for this inertial association");
+            end if;
+         when Iir_Kind_Parenthesis_Expression =>
+            --  - An expression described in this list and enclosed in
+            --    parentheses
+            Check_Inertial_Association_Expr (Get_Expression (Expr));
+         when others =>
+            Error_Msg_Sem
+              (+Expr,
+               "incorrect form of expression for "
+                &"unbounded inertial association");
+      end case;
+   end Check_Inertial_Association_Expr;
+
    function Sem_Signal_Port_Association
      (Assoc : Iir; Formal : Iir; Formal_Base : Iir) return Iir
    is
@@ -517,8 +609,8 @@ package body Vhdl.Sem is
       end if;
       Object := Name_To_Object (Actual);
 
-      if Is_Valid (Object) and then Is_Signal_Object (Object) then
-         --  Port or signal.
+      if Is_Valid (Object) and then Is_Signal_Object (Object, True) then
+         --  Port or signal or view.
 
          --  Mutate to By_Name.
          N_Assoc := Create_Iir (Iir_Kind_Association_Element_By_Name);
@@ -596,6 +688,9 @@ package body Vhdl.Sem is
                   --  LRM08 6.5.6.3 Port clauses
                   Error_Msg_Sem
                     (+Actual, "actual expression must be globally static");
+               elsif not Is_Object_Fully_Constrained (Formal) then
+                  --  LRM08 6.5.6.3 Port clauses
+                  Check_Inertial_Association_Expr (Actual);
                end if;
             end if;
          else
@@ -1388,6 +1483,7 @@ package body Vhdl.Sem is
    function Are_Trees_Equal (Left, Right : Iir) return Boolean
    is
       El_Left, El_Right : Iir;
+      Kind : Iir_Kind;
    begin
       --  Short-cut to speed up.
       if Left = Right then
@@ -1400,30 +1496,63 @@ package body Vhdl.Sem is
          return False;
       end if;
 
+      Kind := Get_Kind (Left);
+
       --  LRM 2.7  Conformance Rules
       --  A simple name can be replaced by an expanded name in which this
       --  simple name is the selector, if and only if at both places the
       --  meaning of the simple name is given by the same declaration.
-      if Get_Kind (Left) in Iir_Kinds_Denoting_Name then
+      if Kind in Iir_Kinds_Denoting_Name then
          if Get_Kind (Right) in Iir_Kinds_Denoting_Name then
-            return Get_Identifier (Left) = Get_Identifier (Right)
-              and then Get_Named_Entity (Left) = Get_Named_Entity (Right);
+            if Get_Identifier (Left) /= Get_Identifier (Right) then
+               return False;
+            end if;
+            declare
+               Name_Left : constant Iir := Get_Named_Entity (Left);
+               Name_Right : constant Iir := Get_Named_Entity (Right);
+            begin
+               if Name_Left = Name_Right then
+                  return True;
+               end if;
+               if Get_Kind (Name_Left) in Iir_Kinds_Interface_Declaration
+                 and then Get_Kind (Name_Left) = Get_Kind (Name_Right)
+                 and then (Get_Identifier (Get_Parent (Name_Left))
+                           = Get_Identifier (Get_Parent (Name_Right)))
+               then
+                  return True;
+               end if;
+               return False;
+            end;
          else
             return False;
          end if;
       end if;
 
       --  If nodes are not of the same kind, then they are not equals!
-      if Get_Kind (Left) /= Get_Kind (Right) then
+      if Kind /= Get_Kind (Right) then
          return False;
       end if;
 
-      case Get_Kind (Left) is
-         when Iir_Kind_Procedure_Declaration =>
+      case Kind is
+         when Iir_Kind_Procedure_Declaration
+            | Iir_Kind_Interface_Procedure_Declaration =>
+            if Kind = Iir_Kind_Procedure_Declaration
+              and then not Are_Trees_Chain_Equal (Get_Generic_Chain (Left),
+                                                  Get_Generic_Chain (Right))
+            then
+               return False;
+            end if;
             return Are_Trees_Chain_Equal
               (Get_Interface_Declaration_Chain (Left),
                Get_Interface_Declaration_Chain (Right));
-         when Iir_Kind_Function_Declaration =>
+         when Iir_Kind_Function_Declaration
+            | Iir_Kind_Interface_Function_Declaration =>
+            if Kind = Iir_Kind_Function_Declaration
+              and then not Are_Trees_Chain_Equal (Get_Generic_Chain (Left),
+                                                  Get_Generic_Chain (Right))
+            then
+               return False;
+            end if;
             if not Are_Trees_Equal (Get_Return_Type (Left),
                                     Get_Return_Type (Right))
             then
@@ -1470,7 +1599,11 @@ package body Vhdl.Sem is
                return False;
             end if;
             return True;
-
+         when Iir_Kind_Interface_Type_Declaration =>
+            return Get_Identifier (Left) = Get_Identifier (Right);
+         when Iir_Kind_Interface_Type_Definition =>
+            return Are_Trees_Equal (Get_Type_Declarator (Left),
+                                    Get_Type_Declarator (Right));
          when Iir_Kind_Integer_Subtype_Definition
            | Iir_Kind_Enumeration_Subtype_Definition
            | Iir_Kind_Floating_Subtype_Definition
@@ -1516,7 +1649,12 @@ package body Vhdl.Sem is
               and then
               Are_Trees_List_Equal (Get_Elements_Declaration_List (Left),
                                     Get_Elements_Declaration_List (Right));
-
+         when Iir_Kind_Record_Element_Constraint =>
+            if Get_Identifier (Left) /= Get_Identifier (Right) then
+               return False;
+            end if;
+            return Are_Trees_Equal (Get_Subtype_Indication (Left),
+                                    Get_Subtype_Indication (Right));
          when Iir_Kind_Integer_Literal =>
             if Get_Value (Left) /= Get_Value (Right) then
                return False;
@@ -1713,7 +1851,7 @@ package body Vhdl.Sem is
       end case;
    end Are_Trees_Equal;
 
-   --  LRM 2.7  Conformance Rules.
+   --  LRM93 2.7 / LRM08 4.10  Conformance Rules.
    procedure Check_Conformance_Rules (Subprg, Spec: Iir) is
    begin
       if not Are_Trees_Equal (Subprg, Spec) then
@@ -1752,10 +1890,20 @@ package body Vhdl.Sem is
          if not Is_Implicit_Subprogram (Decl1)
            and then Get_Kind (Decl1) in Iir_Kinds_Subprogram_Declaration
            and then not Is_Potentially_Visible (Interpretation)
-           and then Get_Subprogram_Hash (Decl1) = Hash
-           and then Is_Same_Profile (Decl, Decl1)
          then
-            return Decl1;
+            if Get_Generic_Chain (Decl) = Null_Iir
+              and then Get_Generic_Chain (Decl1) = Null_Iir
+              and then Get_Subprogram_Hash (Decl1) = Hash
+              and then Is_Same_Profile (Decl, Decl1)
+            then
+               return Decl1;
+            end if;
+            if Get_Generic_Chain (Decl) /= Null_Iir
+              and then Get_Generic_Chain (Decl1) /= Null_Iir
+            then
+               --  For uninstantiated subprogam.
+               return Decl1;
+            end if;
          end if;
          Interpretation := Get_Next_Interpretation (Interpretation);
       end loop;
@@ -1778,7 +1926,9 @@ package body Vhdl.Sem is
          Prev := Get_Declaration (Inter);
          case Get_Kind (Prev) is
             when Iir_Kind_Function_Declaration
-              | Iir_Kind_Procedure_Declaration =>
+              | Iir_Kind_Procedure_Declaration
+              | Iir_Kind_Function_Instantiation_Declaration
+              | Iir_Kind_Procedure_Instantiation_Declaration =>
                if Is_Implicit_Subprogram (Prev) then
                   --  Implicit declarations aren't taken into account (as they
                   --  are mangled differently).
@@ -1920,6 +2070,7 @@ package body Vhdl.Sem is
 
    procedure Sem_Subprogram_Specification (Subprg: Iir)
    is
+      Generic_Chain : Iir;
       Interface_Chain : Iir;
       Return_Type : Iir;
    begin
@@ -1930,8 +2081,11 @@ package body Vhdl.Sem is
 
       -- Sem generics.
       if Get_Kind (Subprg) in Iir_Kinds_Subprogram_Declaration then
-         Sem_Interface_Chain
-           (Get_Generic_Chain (Subprg), Generic_Interface_List);
+         Generic_Chain := Get_Generic_Chain (Subprg);
+         if Generic_Chain /= Null_Iir then
+            Sem_Interface_Chain (Generic_Chain, Generic_Interface_List);
+            Set_Macro_Expand_Flag (Subprg, True);
+         end if;
       end if;
 
       --  Sem interfaces.
@@ -2044,7 +2198,7 @@ package body Vhdl.Sem is
                end if;
             end;
          when others =>
-            Error_Kind ("sem_subprogram_declaration", Subprg);
+            Error_Kind ("sem_subprogram_specification", Subprg);
       end case;
 
       Check_Operator_Requirements (Get_Identifier (Subprg), Subprg);
@@ -2212,6 +2366,9 @@ package body Vhdl.Sem is
       --  (Do not emit warnings for hiding, they were already emitted during
       --   analysis of the subprogram spec).
       Enable_Warning (Warnid_Hide, False);
+
+      Add_Declarations (Get_Generic_Chain (Spec), False);
+
       El := Get_Interface_Declaration_Chain (Spec);
       while El /= Null_Iir loop
          Add_Name (El, Get_Identifier (El), False);
@@ -2408,9 +2565,47 @@ package body Vhdl.Sem is
       return Subprg;
    end Sem_Uninstantiated_Subprogram_Name;
 
+   procedure Load_Subprogram_Body (Decl : Iir; Loc : Iir)
+   is
+      Unit : Iir;
+      Lib_Unit : Iir;
+      Res : Iir;
+      Pkg_Bod : Iir;
+   begin
+      Res := Get_Subprogram_Body (Decl);
+      if Res /= Null_Iir then
+         --  Either not in a package or already loaded.
+         return;
+      end if;
+
+      Unit := Get_Parent (Decl);
+      while Get_Kind (Unit) /= Iir_Kind_Design_Unit loop
+         Unit := Get_Parent (Unit);
+      end loop;
+      Lib_Unit := Get_Library_Unit (Unit);
+      if Get_Kind (Lib_Unit) = Iir_Kind_Package_Declaration then
+         Pkg_Bod := Libraries.Find_Secondary_Unit (Unit, Null_Identifier);
+         if Pkg_Bod = Null_Iir then
+            Error_Msg_Sem
+              (+Loc, "cannot instantiate %n as package body of %n not found",
+               (+Decl, +Lib_Unit));
+            return;
+         end if;
+         Pkg_Bod := Load_Secondary_Unit (Unit, Null_Identifier, Loc);
+         if Pkg_Bod = Null_Iir then
+            return;
+         end if;
+         Add_Dependence (Pkg_Bod);
+      else
+         Error_Msg_Sem
+           (+Loc, "cannot instantiate %n (body not yet seen)", +Decl);
+      end if;
+   end Load_Subprogram_Body;
+
    procedure Sem_Subprogram_Instantiation_Declaration (Decl : Iir)
    is
       Subprg : Iir;
+      Parent : Iir;
    begin
       Xref_Decl (Decl);
 
@@ -2432,6 +2627,24 @@ package body Vhdl.Sem is
 
       --  Create the interface parameters.
       Sem_Inst.Instantiate_Subprogram_Declaration (Decl, Subprg);
+      Sem_Utils.Compute_Subprogram_Hash (Decl);
+      Set_Subprogram_Overload_Number (Decl);
+
+      if Get_Kind (Decl) = Iir_Kind_Procedure_Instantiation_Declaration then
+         Set_Suspend_Flag (Decl, True);
+      end if;
+
+      --  LRM08 4.4 Subprogram instantiation declarations
+      --  If the subprogram insyantiation declaration occurs immediately within
+      --  an enclosing package declaration, then generic-mapped subprogram
+      --  body occurs at the end of the package body corresponding to the
+      --  enclosing pakage declaration.
+      Parent := Get_Parent (Decl);
+      if Get_Kind (Parent) = Iir_Kind_Package_Declaration then
+         null;
+      else
+         Load_Subprogram_Body (Subprg, Decl);
+      end if;
 
       --  Add DECL.  Must be done after parameters creation to handle
       --  homographs.
@@ -3624,6 +3837,8 @@ package body Vhdl.Sem is
          when Date_Valid =>
             null;
          when Date_Obsolete =>
+            --  This happens only when design files are added into the library
+            --  and keeping obsolete units (eg: to pretty print a file).
             Set_Date (Design_Unit, Date_Analyzing);
          when others =>
             raise Internal_Error;
@@ -3671,7 +3886,7 @@ package body Vhdl.Sem is
       Sem_Scopes.Use_All_Names (Standard_Package);
 
       --  Use pre-defined locations for STD and WORK library (as they may
-      --  be later overriden).
+      --  be later overridden).
       Set_Location (Libraries.Std_Library, Libraries.Library_Location);
       Set_Location (Library, Libraries.Library_Location);
 

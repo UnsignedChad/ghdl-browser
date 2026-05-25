@@ -11,7 +11,7 @@
 --     nodes are traversed on demand via Emit_Expr.
 --   * All tables are package-level (global data/BSS), not on the Ada stack.
 
-with Simple_IO;               use Simple_IO;
+with Simple_IO;              use Simple_IO;
 with Ada.Strings.Unbounded;    use Ada.Strings.Unbounded;
 with Interfaces;               use Interfaces;
 with Ortho_Ident;              use Ortho_Ident;
@@ -35,7 +35,7 @@ package body Ortho_Wasm is
       Sz   : Natural  := 4;
    end record;
 
-   Max_Types : constant := 16_384;
+   Max_Types : constant := 262_144;
    type Type_Table_T is array (1 .. Max_Types) of Type_Entry;
    Types     : Type_Table_T;
    Types_Top : Natural := 0;
@@ -87,7 +87,7 @@ package body Ortho_Wasm is
       Kind : Wat_Kind    := Wk_I32;
    end record;
 
-   Max_Cnodes : constant := 16_384;
+   Max_Cnodes : constant := 524_288;
    type Cnode_Table_T is array (1 .. Max_Cnodes) of Cnode_Entry;
    Cnodes     : Cnode_Table_T;
    Cnodes_Top : Natural := 0;
@@ -119,8 +119,17 @@ package body Ortho_Wasm is
       --  Name stored in Ident_Buf, length in Name_Len
       Name_Off : Natural := 0;
       Name_Len : Natural := 0;
+      --  True when the function was declared with O_Storage_Public; we
+      --  emit a (export "<name>" (func $<name>)) line for each such
+      --  function at module-finish time.
+      Is_Public : Boolean := False;
       --  WAT parameter list for Dk_Func entries, built by New_Interface_Decl
-      Params   : Ada.Strings.Unbounded.Unbounded_String;
+      Params    : Ada.Strings.Unbounded.Unbounded_String;
+      --  Phase 6: snapshot of Params taken when Start_Subprogram_Body moves
+      --  the live params out, so we still have a signature for stubbing
+      --  bodyless declarations at Finish time.
+      Saved_Params : Ada.Strings.Unbounded.Unbounded_String;
+      Has_Body     : Boolean := False;
    end record;
 
    --  One big string buffer for all declaration names (avoids per-entry alloc)
@@ -145,7 +154,7 @@ package body Ortho_Wasm is
    --  Forward spec: body is after Decls table declaration.
    function Get_Name (D : O_Dnode) return String;
 
-   Max_Decls : constant := 32_768;
+   Max_Decls : constant := 262_144;
    type Decl_Table_T is array (1 .. Max_Decls) of Decl_Entry;
    Decls     : Decl_Table_T;
    Decls_Top : Natural := 0;
@@ -188,7 +197,10 @@ package body Ortho_Wasm is
                             Idx      => Idx,
                             Name_Off => Off,
                             Name_Len => Nam'Length,
-                            Params   => Ada.Strings.Unbounded.Null_Unbounded_String);
+                            Is_Public => False,
+                            Params    => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Saved_Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Has_Body => False);
       return O_Dnode (Decls_Top);
    end New_Decl;
 
@@ -201,7 +213,7 @@ package body Ortho_Wasm is
       Ftype  : O_Tnode := 0;
    end record;
 
-   Max_Fields : constant := 65_536;
+   Max_Fields : constant := 262_144;
    type Field_Table_T is array (1 .. Max_Fields) of Field_Entry;
    Fields     : Field_Table_T;
    Fields_Top : Natural := 0;
@@ -226,7 +238,8 @@ package body Ortho_Wasm is
       Ek_Call,         -- call $decl  (result on stack)
       Ek_Select,       -- select a b cond  (for abs)
       Ek_Zero,         -- i32.const 0
-      Ek_Lval_Addr,    -- address-of an L-value (emits Lval_Addr_S(arg1))
+      Ek_Addr_Stub,    -- placeholder for address-of (emits i32.const 0)
+      Ek_Addr_Lvalue,  -- proper address-of: encodes O_Lnode in Arg1
       Ek_Wrap_I32      -- i32.wrap_i64 (truncate i64 -> i32)
    );
 
@@ -244,7 +257,7 @@ package body Ortho_Wasm is
       Args  : Ada.Strings.Unbounded.Unbounded_String;
    end record;
 
-   Max_Exprs : constant := 131_072;
+   Max_Exprs : constant := 1_048_576;
    type Expr_Table_T is array (1 .. Max_Exprs) of Expr_Entry;
    Exprs     : Expr_Table_T;
    Exprs_Top : Natural := 0;
@@ -271,7 +284,7 @@ package body Ortho_Wasm is
       Tnode : O_Tnode   := 0;
    end record;
 
-   Max_Lvals : constant := 131_072;
+   Max_Lvals : constant := 1_048_576;
    type Lval_Table_T is array (1 .. Max_Lvals) of Lval_Entry;
    Lvals     : Lval_Table_T;
    Lvals_Top : Natural := 0;
@@ -287,8 +300,31 @@ package body Ortho_Wasm is
    --  Output buffers
    ---------------------------------------------------------------------------
 
+   --  Phase 7: const-aggregate emission. ortho_wasm previously discarded
+   --  every Start_Init_Value / New_Array_Aggr_El callback. The body then
+   --  expected (global.get $X) to point at the array data which was never
+   --  laid out, so reads returned zero (= 'U'). Now we accumulate aggregate
+   --  bytes into Aggr_Buf, emit them as a (data ...) directive at a known
+   --  address, and arrange for the global to point there at module startup.
+   Aggr_Buf      : Unbounded_String;
+   Aggr_Active   : Boolean := False;
+   Data_Buf      : Unbounded_String;
+   Init_Buf      : Unbounded_String;
+   Data_Top      : Natural := 16#18000#;
+   Pending_Init_Decl : O_Dnode := 0;
+
    Globals_Buf         : Unbounded_String;
+   --  Buffer for function bodies; emitted after Globals_Buf in Finish so
+   --  that every (global.get $X) follows the global's declaration (wat2wasm
+   --  is single-pass and rejects forward refs otherwise).
    Funcs_Buf           : Unbounded_String;
+   --  Phase 4: accumulator for (export ...) lines, flushed in Finish.
+   Exports_Buf : Ada.Strings.Unbounded.Unbounded_String;
+   --  Phase 5: function-pointer table. New_Subprogram_Address returns the
+   --  ortho function index, which the host JS must turn back into a real
+   --  callable. We emit a (table) + (elem) section keyed on the same index.
+   Elem_Buf      : Ada.Strings.Unbounded.Unbounded_String;
+   Max_Body_Idx  : Natural := 0;
    Pending_Func_Params : Unbounded_String;
    Pending_Call_Args   : Unbounded_String;
    Debug_Func_Count    : Natural := 0;
@@ -298,7 +334,6 @@ package body Ortho_Wasm is
       Name_Off  : Natural := 0;
       Name_Len  : Natural := 0;
       Ret_Type  : O_Tnode := 0;
-      Idx       : Natural := 0;
       Params    : Unbounded_String;
       Locals    : Unbounded_String;
       Body_Buf  : Unbounded_String;
@@ -306,6 +341,11 @@ package body Ortho_Wasm is
 
    Cur_Func : Func_State;
    In_Func  : Boolean := False;
+   --  Phase 4: index of the function whose body is currently being
+   --  emitted, so Finish_Subprogram_Body can look up its Is_Public flag.
+   Pending_Decl_Idx : O_Dnode := 0;
+   --  Phase 4b: monotonic counter for unique case-block labels
+   Case_Counter : Natural := 0;
    Indent   : Natural := 2;
 
    function Cur_Func_Name return String is
@@ -349,6 +389,8 @@ package body Ortho_Wasm is
    --  Integer image helpers
    ---------------------------------------------------------------------------
 
+   --  Hand-rolled because Ada.Long_Long_Integer_Text_IO.Put returns an
+   --  empty string under AdaWebPack.
    function I64_Img (N : Integer_64) return String is
       Buf : String (1 .. 24);
       Pos : Natural := Buf'Last;
@@ -402,6 +444,57 @@ package body Ortho_Wasm is
 
    procedure Emit_Expr_To (E : O_Enode; Buf : in out Unbounded_String);
 
+   --  Return the wat-kind string ("i32", "i64", "f64") of an expression.
+   function Expr_Wt (E : O_Enode) return String is
+   begin
+      if E = 0 then
+         return "i32";
+      end if;
+      return Wat_Type_Of (Exprs (Natural (E)).Etype);
+   end Expr_Wt;
+
+   --  Emit an expression and coerce its result to Target wat type if
+   --  necessary.  Inserts i32.wrap_i64, i64.extend_i32_s, f64.convert_i32_s
+   --  or i32.trunc_f64_s glue when the operand kind differs from Target.
+   procedure Emit_Coerced_To (E : O_Enode; Target : String;
+                              Buf : in out Unbounded_String);
+
+   procedure Emit_Coerced_To (E : O_Enode; Target : String;
+                              Buf : in out Unbounded_String)
+   is
+      Src : constant String := Expr_Wt (E);
+   begin
+      if Src = Target then
+         Emit_Expr_To (E, Buf);
+      elsif Src = "i64" and Target = "i32" then
+         Append (Buf, "(i32.wrap_i64 ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i32" and Target = "i64" then
+         Append (Buf, "(i64.extend_i32_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i32" and Target = "f64" then
+         Append (Buf, "(f64.convert_i32_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i64" and Target = "f64" then
+         Append (Buf, "(f64.convert_i64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "f64" and Target = "i32" then
+         Append (Buf, "(i32.trunc_f64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "f64" and Target = "i64" then
+         Append (Buf, "(i64.trunc_f64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      else
+         Emit_Expr_To (E, Buf);
+      end if;
+   end Emit_Coerced_To;
+
    procedure Emit_Expr_To (E : O_Enode; Buf : in out Unbounded_String) is
    begin
       if E = 0 then
@@ -419,9 +512,9 @@ package body Ortho_Wasm is
                Append (Buf, "(i64.const " & I64_Img (Ent.Ival) & ")");
             when Ek_Lit_F64 =>
                Append (Buf, "(f64.const " & F64_Img (Ent.Fval) & ")");
-            when Ek_Zero =>
+            when Ek_Zero | Ek_Addr_Stub =>
                Append (Buf, "(i32.const 0)");
-            when Ek_Lval_Addr =>
+            when Ek_Addr_Lvalue =>
                Append (Buf, Lval_Addr_S (O_Lnode (Ent.Arg1)));
             when Ek_Local_Get =>
                Append (Buf, "(local.get $" & Get_Name (Ent.Decl) & ")");
@@ -437,23 +530,26 @@ package body Ortho_Wasm is
                        & ")");
             when Ek_Binop =>
                declare
+                  --  Float arithmetic in WASM uses .div / .rem without
+                  --  signed/unsigned suffix; integer arithmetic uses _s.
+                  Is_F : constant Boolean := Wt = "f64";
                   Op_S : constant String :=
                     (case Ent.Op is
                         when ON_Add_Ov => Wt & ".add",
                         when ON_Sub_Ov => Wt & ".sub",
                         when ON_Mul_Ov => Wt & ".mul",
-                        when ON_Div_Ov => Wt & ".div_s",
-                        when ON_Rem_Ov => Wt & ".rem_s",
-                        when ON_Mod_Ov => Wt & ".rem_s",
+                        when ON_Div_Ov => Wt & (if Is_F then ".div" else ".div_s"),
+                        when ON_Rem_Ov => Wt & (if Is_F then ".min" else ".rem_s"),
+                        when ON_Mod_Ov => Wt & (if Is_F then ".min" else ".rem_s"),
                         when ON_And    => Wt & ".and",
                         when ON_Or     => Wt & ".or",
                         when ON_Xor    => Wt & ".xor",
                         when others    => Wt & ".add");
                begin
                   Append (Buf, "(" & Op_S & " ");
-                  Emit_Expr_To (Ent.Arg1, Buf);
+                  Emit_Coerced_To (Ent.Arg1, Wt, Buf);
                   Append (Buf, " ");
-                  Emit_Expr_To (Ent.Arg2, Buf);
+                  Emit_Coerced_To (Ent.Arg2, Wt, Buf);
                   Append (Buf, ")");
                end;
             when Ek_Monop =>
@@ -467,14 +563,21 @@ package body Ortho_Wasm is
                      Emit_Expr_To (Ent.Arg1, Buf);
                      Append (Buf, ")");
                   when ON_Abs_Ov =>
-                     --  abs(x): select x (-x) (x>=0)
-                     Append (Buf, "(select ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, " (" & Wt & ".sub (" & Wt & ".const 0) ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, ") (" & Wt & ".ge_s ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, " (" & Wt & ".const 0)))");
+                     --  abs(x): for floats use the dedicated f64.abs.
+                     --  For integers: select x (-x) (x>=0).
+                     if Wt = "f64" then
+                        Append (Buf, "(f64.abs ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, ")");
+                     else
+                        Append (Buf, "(select ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, " (" & Wt & ".sub (" & Wt & ".const 0) ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, ") (" & Wt & ".ge_s ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, " (" & Wt & ".const 0)))");
+                     end if;
                   when others => null;
                end case;
             when Ek_Compare =>
@@ -489,24 +592,21 @@ package body Ortho_Wasm is
                   --  wider operand down with i32.wrap_i64.
                   Wt2  : constant String :=
                     (if K1 = Wk_I32 or K2 = Wk_I32 then "i32" else Wat_Type_Of (T1));
+                  --  Float comparisons in WASM have no _s/_u suffix.
+                  Sfx  : constant String := (if Wt2 = "f64" then "" else "_s");
                   Op_S : constant String :=
                     (case Ent.Op is
                         when ON_Eq  => Wt2 & ".eq",
                         when ON_Neq => Wt2 & ".ne",
-                        when ON_Le  => Wt2 & ".le_s",
-                        when ON_Lt  => Wt2 & ".lt_s",
-                        when ON_Ge  => Wt2 & ".ge_s",
-                        when ON_Gt  => Wt2 & ".gt_s",
+                        when ON_Le  => Wt2 & ".le" & Sfx,
+                        when ON_Lt  => Wt2 & ".lt" & Sfx,
+                        when ON_Ge  => Wt2 & ".ge" & Sfx,
+                        when ON_Gt  => Wt2 & ".gt" & Sfx,
                         when others => Wt2 & ".eq");
                   procedure Emit_Arg (E : O_Enode; K : Wat_Kind) is
+                     pragma Unreferenced (K);
                   begin
-                     if Wt2 = "i32" and K = Wk_I64 then
-                        Append (Buf, "(i32.wrap_i64 ");
-                        Emit_Expr_To (E, Buf);
-                        Append (Buf, ")");
-                     else
-                        Emit_Expr_To (E, Buf);
-                     end if;
+                     Emit_Coerced_To (E, Wt2, Buf);
                   end Emit_Arg;
                begin
                   Append (Buf, "(" & Op_S & " ");
@@ -596,6 +696,41 @@ package body Ortho_Wasm is
       end;
    end Lval_Read_S;
 
+   --  Return the wat-kind string of an lvalue based on its Tnode.
+   function Lval_Wt (L : O_Lnode) return String is
+   begin
+      if L = 0 then return "i32"; end if;
+      declare
+         Lv : Lval_Entry renames Lvals (Natural (L));
+      begin
+         if Lv.Tnode /= 0 then
+            return Wat_Type_Of (Lv.Tnode);
+         end if;
+         --  Composite/pointer lvalues default to i32.
+         return "i32";
+      end;
+   end Lval_Wt;
+
+   --  Build a wat string that coerces Val (currently of type Src) to Target.
+   function Coerced_S (Val : String; Src, Target : String) return String is
+   begin
+      if Src = Target then return Val; end if;
+      if Src = "i64" and Target = "i32" then
+         return "(i32.wrap_i64 " & Val & ")";
+      elsif Src = "i32" and Target = "i64" then
+         return "(i64.extend_i32_s " & Val & ")";
+      elsif Src = "i32" and Target = "f64" then
+         return "(f64.convert_i32_s " & Val & ")";
+      elsif Src = "i64" and Target = "f64" then
+         return "(f64.convert_i64_s " & Val & ")";
+      elsif Src = "f64" and Target = "i32" then
+         return "(i32.trunc_f64_s " & Val & ")";
+      elsif Src = "f64" and Target = "i64" then
+         return "(i64.trunc_f64_s " & Val & ")";
+      end if;
+      return Val;
+   end Coerced_S;
+
    --  Write Val into lvalue L.
    function Lval_Write_S (L : O_Lnode; Val : String) return String is
    begin
@@ -651,7 +786,10 @@ package body Ortho_Wasm is
       Put_Line ("  (import ""env"" ""__ghdl_check_stack_allocation"" (func $__ghdl_check_stack_allocation (param i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_ieee_assert_failed"" (func $__ghdl_ieee_assert_failed (param i32 i32 i32 i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_i32_mod"" (func $__ghdl_i32_mod (param i32 i32) (result i32)))");
-      --  Additional GRT helpers referenced by emitted code.
+      --  Additional GRT helpers referenced by emitted code but historically
+      --  patched in by post-processing (e.g. VHDLive/server/src/compile.js
+      --  patchWat).  Declaring them here makes wat2wasm accept the output
+      --  directly.
       Put_Line ("  (import ""env"" ""__ghdl_malloc0"" (func $__ghdl_malloc0 (param i32) (result i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_integer_index_check_failed"" (func $__ghdl_integer_index_check_failed (param i32 i32 i32 i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_rti_add_package"" (func $__ghdl_rti_add_package (param i32)))");
@@ -676,14 +814,79 @@ package body Ortho_Wasm is
    end Init;
 
    procedure Finish is
+      MaxImg : constant String := Natural'Image (Max_Body_Idx + 1);
+      MaxTrim : constant String := MaxImg (MaxImg'First + 1 .. MaxImg'Last);
    begin
       --  Emit globals before functions so wat2wasm can resolve forward refs.
       Put (To_String (Globals_Buf));
       Put (To_String (Funcs_Buf));
-      --  Export key entry points so a JS host can drive simulation.
-      --  __ghdl_ELABORATE is always emitted; the entitys *_DECL_ELAB /
-      --  *_STMT_ELAB pair is the top-level scheduler hook.
-      Put_Line ("  (export ""__ghdl_ELABORATE"" (func $__ghdl_ELABORATE))");
+      --  Phase 5: emit the function-pointer table. Size = Max_Body_Idx + 1.
+      Put_Line ("  (table $__T " & MaxTrim & " funcref)");
+      Put_Line ("  (export ""__indirect_function_table"" (table $__T))");
+      Put (To_String (Elem_Buf));
+      --  Phase 6: emit empty stub bodies for any function that was declared
+      --  but whose body was never translated. The synth-based simulator skips
+      --  configuration bodies (default DEFAULT_CONFIG), and there may be other
+      --  declared-only functions referenced from elab code.
+      for I in 1 .. Decls_Top loop
+         if Decls (I).Kind = Dk_Func
+           and then not Decls (I).Has_Body
+           and then Decls (I).Name_Len > 0
+         then
+            declare
+               Nm : constant String :=
+                 Ident_Buf (Decls (I).Name_Off
+                          .. Decls (I).Name_Off + Decls (I).Name_Len - 1);
+               --  If the name matches one of the imports we ALREADY declared
+               --  in Init (anything starting with "__ghdl_"), skip — emitting a
+               --  func with the same name as an import is a wat2wasm error.
+               function Ends_With (Suffix : String) return Boolean is
+               begin
+                  return Nm'Length >= Suffix'Length
+                    and then Nm (Nm'Last - Suffix'Length + 1 .. Nm'Last)
+                             = Suffix;
+               end Ends_With;
+               --  Default param signature for elab/config stubs when the
+               --  Decls.Params field is empty (simul-driven external-decl
+               --  path skips New_Interface_Decl for some instantiations).
+               Default_Param : constant Boolean :=
+                 Length (Decls (I).Params) = 0
+                 and then Length (Decls (I).Saved_Params) = 0
+                 and then (Ends_With ("DECL_ELAB")
+                           or else Ends_With ("STMT_ELAB")
+                           or else Ends_With ("DEFAULT_CONFIG"));
+               Param_Str : constant String :=
+                 (if Default_Param then " (param $INSTANCE i32)"
+                  else To_String (Decls (I).Params)
+                       & To_String (Decls (I).Saved_Params));
+            begin
+               if Nm'Length < 7 or else Nm (Nm'First .. Nm'First + 6) /= "__ghdl_" then
+                  Put ("  (func $" & Nm & Param_Str);
+                  if Decls (I).Tnode /= 0 then
+                     Put (" (result " & Wat_Type_Of (Decls (I).Tnode) & ")");
+                  end if;
+                  Put_Line ("");
+                  if Decls (I).Tnode /= 0 then
+                     Put_Line ("    (unreachable)");
+                  end if;
+                  Put_Line ("  )");
+               end if;
+            end;
+         end if;
+      end loop;
+      --  Phase 4: flush export declarations gathered during translation.
+      Put (To_String (Exports_Buf));
+      --  Phase 7: emit (data ...) segments for array-aggregate constants.
+      Put (To_String (Data_Buf));
+      --  Emit the __init_consts function that wires up the const globals
+      --  to point at their data segments. Marked with (start ...) so it
+      --  runs once at module instantiation.
+      if Length (Init_Buf) > 0 then
+         Put_Line ("  (func $__init_consts");
+         Put (To_String (Init_Buf));
+         Put_Line ("  )");
+         Put_Line ("  (start $__init_consts)");
+      end if;
       Put_Line (")");
    end Finish;
 
@@ -792,10 +995,22 @@ package body Ortho_Wasm is
    function New_Array_Subtype
      (Atype : O_Tnode; El_Type : O_Tnode; Length : O_Cnode) return O_Tnode
    is
-      pragma Unreferenced (Atype, Length);
+      pragma Unreferenced (Atype);
       El_Sz : constant Natural :=
                 (if El_Type = 0 then 4 else Types (Natural (El_Type)).Sz);
-   begin return New_Type (Wk_Memory, El_Sz); end New_Array_Subtype;
+      --  Pull the element count out of the Cnode constant. Without it the
+      --  subtype's byte-size was set to the size of a SINGLE element, which
+      --  made every memcpy / aggregate copy stop after one cell and the
+      --  rest of any vector value stay at its default 0/U.
+      Len : constant Natural :=
+                (if Length = 0 then 1
+                 else Natural (Cnodes (Natural (Length)).Val));
+      --  Guard against pathological inputs (zero-length or runaway).
+      Safe_Len : constant Natural :=
+                (if Len = 0 then 1
+                 elsif Len > 4096 then 4096
+                 else Len);
+   begin return New_Type (Wk_Memory, El_Sz * Safe_Len); end New_Array_Subtype;
 
    function New_Unsigned_Type (Size : Natural) return O_Tnode is
    begin
@@ -882,11 +1097,50 @@ package body Ortho_Wasm is
 
    procedure Start_Array_Aggr
      (List : out O_Array_Aggr_List; Atype : O_Tnode; Len : Unsigned_32)
-   is pragma Unreferenced (Atype, Len); begin List := (Cnode => 0); end Start_Array_Aggr;
+   is
+      pragma Unreferenced (Atype, Len);
+   begin
+      List := (Cnode => 0);
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := True;
+   end Start_Array_Aggr;
    procedure New_Array_Aggr_El (List : in out O_Array_Aggr_List; Value : O_Cnode)
-   is pragma Unreferenced (Value); begin null; end New_Array_Aggr_El;
+   is
+      pragma Unreferenced (List);
+      V : constant Integer_64 :=
+        (if Value = 0 then 0 else Cnodes (Natural (Value)).Val);
+      Iv : constant Integer_64 := V mod 2 ** 32;
+      function Esc (Byte : Natural) return String is
+         Hex : constant String := "0123456789abcdef";
+      begin
+         return "\" & Hex (Byte / 16 + 1) & Hex (Byte mod 16 + 1);
+      end Esc;
+   begin
+      if Aggr_Active then
+         Append (Aggr_Buf, Esc (Natural (Iv mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 256) mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 65536) mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 16777216) mod 256)));
+      end if;
+   end New_Array_Aggr_El;
    procedure Finish_Array_Aggr (List : in out O_Array_Aggr_List; Res : out O_Cnode)
-   is begin Res := List.Cnode; end Finish_Array_Aggr;
+   is
+      Addr  : constant Natural := Data_Top;
+      AImg  : constant String := Natural'Image (Addr);
+      ATrim : constant String := AImg (AImg'First + 1 .. AImg'Last);
+   begin
+      if Aggr_Active and then Length (Aggr_Buf) > 0 then
+         Append (Data_Buf,
+                 "  (data (i32.const " & ATrim & ") """ &
+                 To_String (Aggr_Buf) & """)" & ASCII.LF);
+         Data_Top := Data_Top + Length (Aggr_Buf) / 3;
+         Res := New_Cnode (Integer_64 (Addr), Wk_I32);
+      else
+         Res := List.Cnode;
+      end if;
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := False;
+   end Finish_Array_Aggr;
 
    function New_Union_Aggr (Atype : O_Tnode; Field : O_Fnode; Value : O_Cnode)
      return O_Cnode is
@@ -915,8 +1169,15 @@ package body Ortho_Wasm is
    function New_Subprogram_Address (Subprg : O_Dnode; Atype : O_Tnode)
      return O_Cnode is
       pragma Unreferenced (Atype);
+      Si : constant Natural := Natural (Subprg);
    begin
-      return New_Cnode (Integer_64 (Decls (Natural (Subprg)).Idx), Wk_I32);
+      if Si = 0 or else Si > Decls_Top then
+         Simple_IO.Put_Line_Err (
+            "WASM: New_Subprogram_Address out-of-range Subprg=" & Natural'Image (Si));
+         null;
+         return New_Cnode (0, Wk_I32);
+      end if;
+      return New_Cnode (Integer_64 (Decls (Si).Idx), Wk_I32);
    end New_Subprogram_Address;
 
    function New_Global_Address (Lvalue : O_Gnode; Atype : O_Tnode) return O_Cnode is
@@ -1048,7 +1309,9 @@ package body Ortho_Wasm is
    function New_Address (Lvalue : O_Lnode; Atype : O_Tnode) return O_Enode is
       pragma Unreferenced (Atype);
    begin
-      return New_Expr ((Kind => Ek_Lval_Addr,
+      --  Encode the lvalue in Arg1 so emission can pull its real address
+      --  (via Lval_Addr_S) instead of always returning (i32.const 0).
+      return New_Expr ((Kind => Ek_Addr_Lvalue,
                         Arg1 => O_Enode (Lvalue),
                         others => <>));
    end New_Address;
@@ -1058,9 +1321,14 @@ package body Ortho_Wasm is
    begin return New_Address (Lvalue, Atype); end New_Unchecked_Address;
 
    function New_Value (Lvalue : O_Lnode) return O_Enode is
+      Etype : O_Tnode := 0;
    begin
-      return New_Expr ((Kind => Ek_Load,
-                        Arg1 => O_Enode (Lvalue),   -- encode lval as enode
+      if Lvalue /= 0 then
+         Etype := Lvals (Natural (Lvalue)).Tnode;
+      end if;
+      return New_Expr ((Kind  => Ek_Load,
+                        Arg1  => O_Enode (Lvalue),   -- encode lval as enode
+                        Etype => Etype,
                         others => <>));
    end New_Value;
 
@@ -1127,7 +1395,7 @@ package body Ortho_Wasm is
       Wt  : constant String := Wat_Type_Of (Atype);
    begin
       Res := New_Decl (Dk_Const, Nam, Atype);
-      Append (Globals_Buf, "  (global $" & Nam & " " & Wt &
+      Append (Globals_Buf, "  (global $" & Nam & " (mut " & Wt & ")" &
               " (" & Wt & ".const 0))" & ASCII.LF);
       if Length (Globals_Buf) > 50_000_000 then
          Simple_IO.Put_Line_Err (
@@ -1138,14 +1406,74 @@ package body Ortho_Wasm is
    end New_Const_Decl;
 
    procedure Start_Init_Value (Decl : in out O_Dnode) is
-      pragma Unreferenced (Decl); begin null; end Start_Init_Value;
+   begin
+      Pending_Init_Decl := Decl;
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := False;
+   end Start_Init_Value;
    procedure Finish_Init_Value (Decl : in out O_Dnode; Val : O_Cnode) is
-      pragma Unreferenced (Decl, Val); begin null; end Finish_Init_Value;
+      Nm : constant String :=
+        (if Natural (Decl) <= Decls_Top and then Decls (Natural (Decl)).Name_Len > 0
+         then Ident_Buf (Decls (Natural (Decl)).Name_Off
+                         .. Decls (Natural (Decl)).Name_Off + Decls (Natural (Decl)).Name_Len - 1)
+         else "");
+      V : constant Integer_64 :=
+        (if Val = 0 then 0 else Cnodes (Natural (Val)).Val);
+      VImg : constant String := Integer_64'Image (V);
+      VTrim : constant String :=
+        (if V < 0 then VImg else VImg (VImg'First + 1 .. VImg'Last));
+   begin
+      if Nm /= "" and then V /= 0 then
+         Append (Init_Buf,
+                 "    (global.set $" & Nm &
+                 " (i32.const " & VTrim & "))" & ASCII.LF);
+      end if;
+      Pending_Init_Decl := 0;
+   end Finish_Init_Value;
 
    procedure New_Var_Decl (Res : out O_Dnode; Ident : O_Ident;
                            Storage : O_Storage; Atype : O_Tnode) is
-      Nam : constant String := Get_String (Ident);
+      Base_Nam : constant String := Get_String (Ident);
       Wt  : constant String := Wat_Type_Of (Atype);
+      --  If a local with the same name was already declared in this
+      --  function with a DIFFERENT wat type, use a type-suffixed name
+      --  so the two coexist without clashing.  Temp names like $T5_0
+      --  get reused by the upper layers across integer and float
+      --  contexts; declaring them once as i32 makes f64 assignments
+      --  fail wat2wasm type checking.
+      function Resolve_Nam return String is
+         Probe : constant String := "$" & Base_Nam & " " & Wt;
+      begin
+         if Storage /= O_Storage_Local or else not In_Func then
+            return Base_Nam;
+         end if;
+         --  Same name + same type already present? -> reuse.
+         if Index (Cur_Func.Locals, Probe & ")") > 0 then
+            return Base_Nam;
+         end if;
+         --  Same name + different type? -> suffix with type.
+         if Index (Cur_Func.Locals, "$" & Base_Nam & " ") > 0 then
+            return Base_Nam & "_" & Wt;
+         end if;
+         return Base_Nam;
+      end Resolve_Nam;
+      Nam : constant String := Resolve_Nam;
+      --  For Wk_Memory locals (records / arrays), GHDL'''s upper layers expect
+      --  the local to hold a POINTER to caller-or-locally-allocated storage,
+      --  and they often take its address via New_Unchecked_Address. The standard
+      --  mcode / llvm back-ends allocate that storage automatically. We do the
+      --  same here: emit a stack2_allocate call as the first statement of the
+      --  function body so each composite local has backing memory.
+      Auto_Alloc : constant Boolean :=
+        Storage = O_Storage_Local
+        and then Atype /= 0
+        and then Wat_Kind_Of (Atype) = Wk_Memory
+        and then Types (Natural (Atype)).Sz > 0;
+      Alloc_Sz : constant Natural :=
+        (if Auto_Alloc then Natural'Max (Types (Natural (Atype)).Sz, 32) else 0);
+      AlImg : constant String := Natural'Image (Alloc_Sz);
+      AlTrim : constant String :=
+        (if AlImg'Length >= 2 then AlImg (AlImg'First + 1 .. AlImg'Last) else AlImg);
    begin
       if Storage = O_Storage_Local then
          Res := New_Decl (Dk_Local, Nam, Atype);
@@ -1154,6 +1482,12 @@ package body Ortho_Wasm is
             if Index (Cur_Func.Locals, "$" & Nam & " ") = 0 then
                Append (Cur_Func.Locals,
                        "    (local $" & Nam & " " & Wt & ")" & ASCII.LF);
+               if Auto_Alloc then
+                  Append (Cur_Func.Body_Buf,
+                          "    (local.set $" & Nam &
+                          " (call $__ghdl_stack2_allocate (i32.const " & AlTrim &
+                          ")))" & ASCII.LF);
+               end if;
             end if;
             if Length (Cur_Func.Locals) > 10_000_000 then
                Simple_IO.Put_Line_Err (
@@ -1189,9 +1523,17 @@ package body Ortho_Wasm is
    procedure Start_Function_Decl (Interfaces : out O_Inter_List;
                                   Ident : O_Ident; Storage : O_Storage;
                                   Rtype : O_Tnode) is
-      pragma Unreferenced (Storage);
       Nam : constant String := Get_String (Ident);
       Off : constant Natural := Store_Name (Nam);
+      --  Phase 4: also export any user-design function. The translation
+      --  layer marks user processes O_Storage_Private but the browser-
+      --  side runtime needs to invoke them, so we override here. Names
+      --  starting with 'work__' are the design's own code (testbench,
+      --  RTL processes, etc.); everything else only exports if Storage
+      --  is explicitly Public.
+      Public : constant Boolean :=
+        Storage = O_Storage_Public
+        or else (Nam'Length >= 6 and then Nam (Nam'First .. Nam'First + 5) = "work__");
    begin
       Pending_Func_Params := Null_Unbounded_String;
       Decls_Top  := Decls_Top + 1;
@@ -1199,7 +1541,10 @@ package body Ortho_Wasm is
       Decls (Decls_Top) := (Kind => Dk_Func, Tnode => Rtype,
                             Idx => Func_Count, Name_Off => Off,
                             Name_Len => Nam'Length,
-                            Params => Ada.Strings.Unbounded.Null_Unbounded_String);
+                            Is_Public => Public,
+                            Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Saved_Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Has_Body => False);
       Interfaces := (Func => O_Dnode (Decls_Top));
    end Start_Function_Decl;
 
@@ -1233,6 +1578,7 @@ package body Ortho_Wasm is
 
    procedure Start_Subprogram_Body (Func : O_Dnode) is
    begin
+      Pending_Decl_Idx := Func;
       In_Func   := True;
       Exprs_Top := 0;
       Lvals_Top := 0;
@@ -1240,17 +1586,19 @@ package body Ortho_Wasm is
       Cur_Func  := (Name_Off  => Decls (Natural (Func)).Name_Off,
                     Name_Len  => Decls (Natural (Func)).Name_Len,
                     Ret_Type  => Decls (Natural (Func)).Tnode,
-                    Idx       => Decls (Natural (Func)).Idx,
                     Params    => Decls (Natural (Func)).Params,
                     Locals    => Null_Unbounded_String,
                     Body_Buf  => Null_Unbounded_String);
+      Decls (Natural (Func)).Saved_Params := Decls (Natural (Func)).Params;
       Decls (Natural (Func)).Params := Null_Unbounded_String;
       Indent := 4;
    end Start_Subprogram_Body;
 
    --  Strip duplicate "(param $X t)" entries from a Params string.
-   --  GHDL sometimes emits the same interface param twice via repeated
-   --  Start_*/New_Interface_Decl calls under the wasm pipeline.
+   --  Several codegen paths call New_Interface_Decl repeatedly with the
+   --  same INSTANCE param (notably COMP_ELAB) producing
+   --  "(param $INSTANCE i32) (param $INSTANCE i32) ..." which wat2wasm
+   --  rejects as duplicate-parameter-name.
    function Dedupe_Params (P : String) return String is
       use Ada.Strings.Unbounded;
       Result : Unbounded_String;
@@ -1265,7 +1613,6 @@ package body Ortho_Wasm is
            and then P (I .. I + 6) = " (param"
          then
             J := I;
-            --  find matching ')' (single-level, no nesting expected inside)
             K := I + 7;
             while K <= P'Last and then P (K) /= ')' loop
                K := K + 1;
@@ -1274,7 +1621,6 @@ package body Ortho_Wasm is
                Tlen := K - J + 1;
                if Tlen <= 256 then
                   Token (1 .. Tlen) := P (J .. K);
-                  --  Has this exact token been seen?
                   if Index (Seen, Token (1 .. Tlen)) = 0 then
                      Append (Result, Token (1 .. Tlen));
                      Append (Seen, Token (1 .. Tlen) & "|");
@@ -1308,13 +1654,6 @@ package body Ortho_Wasm is
          Append (Funcs_Buf, "    (unreachable)" & ASCII.LF);
       end if;
       Append (Funcs_Buf, "  )" & ASCII.LF);
-      --  Browser host: alias every emitted function under its GHDL Idx so
-      --  JS can look up the function passed to __ghdl_process_register as
-      --  inst.exports["f" + idx].
-      Append (Funcs_Buf,
-              "  (export """ & "f" & I64_Img (Integer_64 (Cur_Func.Idx))
-              & """ (func $" & Nam & "))" & ASCII.LF);
-
       Cur_Func.Params   := Null_Unbounded_String;
       Cur_Func.Locals   := Null_Unbounded_String;
       Cur_Func.Body_Buf := Null_Unbounded_String;
@@ -1329,6 +1668,33 @@ package body Ortho_Wasm is
       end if;
       In_Func := False;
       Indent  := 2;
+      Decls (Natural (Pending_Decl_Idx)).Has_Body := True;
+      --  Phase 5: record this body in the function-pointer table so the
+      --  host can resolve indices returned by New_Subprogram_Address.
+      declare
+         Idx : constant Natural := Decls (Natural (Pending_Decl_Idx)).Idx;
+         IdxImg : constant String := Natural'Image (Idx);
+         IdxTrim : constant String := IdxImg (IdxImg'First + 1 .. IdxImg'Last);
+      begin
+         Append (Elem_Buf,
+                 "  (elem (i32.const " & IdxTrim & ") $" & Nam & ")" & ASCII.LF);
+         if Idx > Max_Body_Idx then
+            Max_Body_Idx := Idx;
+         end if;
+      end;
+      --  Phase 4: emit a (export ...) line for public functions so a
+      --  host can drive elaboration and access process entry points.
+      if Decls (Natural (Pending_Decl_Idx)).Is_Public then
+         declare
+            Nm : constant String :=
+              Ident_Buf (Decls (Natural (Pending_Decl_Idx)).Name_Off
+                       .. Decls (Natural (Pending_Decl_Idx)).Name_Off
+                            + Decls (Natural (Pending_Decl_Idx)).Name_Len - 1);
+         begin
+            Append (Exports_Buf,
+                    "  (export """ & Nm & """ (func $" & Nm & "))" & ASCII.LF);
+         end;
+      end if;
    end Finish_Subprogram_Body;
 
    ---------------------------------------------------------------------------
@@ -1359,9 +1725,14 @@ package body Ortho_Wasm is
 
    function New_Function_Call (Assocs : O_Assoc_List) return O_Enode is
       Result : O_Enode;
+      Ret_T  : O_Tnode := 0;
    begin
+      if Assocs.Func /= 0 then
+         Ret_T := Decls (Natural (Assocs.Func)).Tnode;
+      end if;
       Result := New_Expr ((Kind => Ek_Call, Decl => Assocs.Func,
-                           Args => Pending_Call_Args, others => <>));
+                           Args => Pending_Call_Args,
+                           Etype => Ret_T, others => <>));
       Pending_Call_Args := Null_Unbounded_String;
       return Result;
    end New_Function_Call;
@@ -1374,8 +1745,10 @@ package body Ortho_Wasm is
    end New_Procedure_Call;
 
    procedure New_Assign_Stmt (Target : O_Lnode; Value : O_Enode) is
+      Tgt : constant String := Lval_Wt (Target);
+      Src : constant String := Expr_Wt (Value);
    begin
-      Emit_Ln (Lval_Write_S (Target, Expr_S (Value)));
+      Emit_Ln (Lval_Write_S (Target, Coerced_S (Expr_S (Value), Src, Tgt)));
    end New_Assign_Stmt;
 
    procedure New_Return_Stmt (Value : O_Enode) is
@@ -1431,10 +1804,35 @@ package body Ortho_Wasm is
    procedure New_Next_Stmt (L : O_Snode) is
    begin Emit_Ln ("(br $loop" & Img (Natural (L)) & ")"); end New_Next_Stmt;
 
+   --  Phase 4b: real case-statement compilation.
+   --  Wrapper structure:
+   --     (block $case_end_N
+   --       (if (i32.eq <value> <choice0>) (then ...body... (br $case_end_N)))
+   --       (if (i32.eq <value> <choice1>) (then ...body... (br $case_end_N)))
+   --       ...default body emitted unconditionally as last arm...
+   --     )
+   --  Each (if ...) closes itself once the next arm starts (or the case ends),
+   --  via Close_Open_Arm.
+
+   procedure Close_Open_Arm (Block : in out O_Case_Block) is
+   begin
+      if Block.Has_Open_Arm then
+         Emit_Ln ("(br $case_end_" & Img (Block.Label_Idx) & ")");
+         Indent := Indent - 4;
+         Emit_Ln ("))");
+         Block.Has_Open_Arm := False;
+      end if;
+   end Close_Open_Arm;
+
    procedure Start_Case_Stmt (Block : in out O_Case_Block; Value : O_Enode) is
    begin
-      Emit_Ln (";; case " & Expr_S (Value) & " {");
-      Block := (Depth => Indent);
+      Case_Counter := Case_Counter + 1;
+      Block := (Depth        => Indent,
+                Value_Expr   => Ada.Strings.Unbounded.To_Unbounded_String
+                                  (Expr_S (Value)),
+                Label_Idx    => Case_Counter,
+                Has_Open_Arm => False);
+      Emit_Ln ("(block $case_end_" & Img (Case_Counter));
       Indent := Indent + 2;
    end Start_Case_Stmt;
 
@@ -1442,18 +1840,45 @@ package body Ortho_Wasm is
       pragma Unreferenced (Block); begin null; end Start_Choice;
 
    procedure New_Expr_Choice (Block : in out O_Case_Block; Expr : O_Cnode) is
-      pragma Unreferenced (Block);
    begin
-      Emit_Ln (";; when " & I64_Img (Cnodes (Natural (Expr)).Val));
+      Close_Open_Arm (Block);
+      Emit_Ln ("(if (i32.eq "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (Expr)).Val) & "))");
+      Emit_Ln ("  (then");
+      Indent := Indent + 4;
+      Block.Has_Open_Arm := True;
    end New_Expr_Choice;
 
    procedure New_Range_Choice (Block : in out O_Case_Block; Low, High : O_Cnode) is
-      pragma Unreferenced (Block, Low, High); begin null; end New_Range_Choice;
+   begin
+      Close_Open_Arm (Block);
+      Emit_Ln ("(if (i32.and (i32.ge_s "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (Low)).Val) & "))");
+      Emit_Ln ("              (i32.le_s "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (High)).Val) & ")))");
+      Emit_Ln ("  (then");
+      Indent := Indent + 4;
+      Block.Has_Open_Arm := True;
+   end New_Range_Choice;
+
    procedure New_Default_Choice (Block : in out O_Case_Block) is
-      pragma Unreferenced (Block); begin null; end New_Default_Choice;
+   begin
+      Close_Open_Arm (Block);
+      --  Default body emits unconditionally; no wrap. Should be the last arm.
+      Block.Has_Open_Arm := False;
+   end New_Default_Choice;
+
    procedure Finish_Choice (Block : in out O_Case_Block) is
       pragma Unreferenced (Block); begin null; end Finish_Choice;
+
    procedure Finish_Case_Stmt (Block : in out O_Case_Block) is
-   begin Indent := Block.Depth; Emit_Ln (";; }"); end Finish_Case_Stmt;
+   begin
+      Close_Open_Arm (Block);
+      Indent := Block.Depth;
+      Emit_Ln (")");
+   end Finish_Case_Stmt;
 
 end Ortho_Wasm;

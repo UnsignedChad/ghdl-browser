@@ -1,6 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
-with Name_Table;
 --  Iir to ortho translator.
 --  Copyright (C) 2002 - 2014 Tristan Gingold
 --
@@ -160,7 +158,9 @@ package body Trans.Chap4 is
                --  Not a full constant declaration (ie a value for an
                --   already declared constant).
                --  Must create the declaration.
-               if Chap7.Is_Static_Constant (El) then
+               if Get_Type_Staticness (Def) = Locally
+                 and then Chap7.Is_Static_Constant (El)
+               then
                   Info.Object_Static := True;
                   Info.Object_Var := Create_Global_Const
                     (Create_Identifier (El), Obj_Type, Global_Storage,
@@ -313,6 +313,10 @@ package body Trans.Chap4 is
                Tinfo := Get_Info (Get_Type (Decl));
 
                Info := Add_Info (Decl, Kind_Alias);
+
+               --  Always use pointers to access to the object, as it is not
+               --  known.
+               Info.Alias_Direct := False;
 
                if Kind = Iir_Kind_External_Signal_Name then
                   Info.Alias_Kind := Mode_Signal;
@@ -1238,7 +1242,7 @@ package body Trans.Chap4 is
                Start_Association (Assoc, Ghdl_Signal_Set_Mode);
                New_Association (Assoc,
                                 New_Lit
-                                  (New_Unsigned_Literal
+                                  (New_Signed_Literal
                                      (Ghdl_I32_Type, Iir_Mode'Pos (N_Mode))));
                New_Procedure_Call (Assoc);
             end;
@@ -1815,12 +1819,18 @@ package body Trans.Chap4 is
 
    procedure Translate_Subtype_Declaration (Decl : Iir_Subtype_Declaration)
    is
-      Def : constant Iir := Get_Type (Decl);
+      Def : constant Iir := Get_Subtype_Indication (Decl);
       Mark  : Id_Mark_Type;
+      Info  : Ortho_Info_Acc;
    begin
-      Push_Identifier_Prefix (Mark, Get_Identifier (Decl));
-      Chap3.Translate_Subtype_Definition (Def, True);
-      Pop_Identifier_Prefix (Mark);
+      if Get_Kind (Def) in Iir_Kinds_Denoting_Name then
+         Info := Add_Info (Decl, Kind_Object);
+         Info.Object_Var := Null_Var;
+      else
+         Push_Identifier_Prefix (Mark, Get_Identifier (Decl));
+         Chap3.Translate_Subtype_Definition (Get_Type (Decl), True);
+         Pop_Identifier_Prefix (Mark);
+      end if;
    end Translate_Subtype_Declaration;
 
    procedure Translate_Bool_Type_Declaration (Decl : Iir_Type_Declaration)
@@ -1884,15 +1894,25 @@ package body Trans.Chap4 is
       end if;
 
       Tinfo := Get_Info (Decl_Type);
-      for Mode in Mode_Value .. Info.Alias_Kind loop
-         Atype := Get_Alias_Ortho_Type (Tinfo, Mode);
-         if Mode = Mode_Signal then
-            Id := Create_Var_Identifier (Decl, "_SIG", 0);
-         else
-            Id := Create_Var_Identifier (Decl);
-         end if;
-         Info.Alias_Var (Mode) := Create_Var (Id, Atype);
-      end loop;
+
+      if Get_Kind (Name) in Iir_Kinds_Denoting_Name
+        and then Tinfo.Type_Mode in Type_Mode_Non_Composite
+      then
+         --  Do not use an alias, directly substitute the name.
+         --  This is in particular required for alias of subprogram interfaces
+         --  (as the address of an interface cannot be taken).
+         Info.Alias_Direct := True;
+      else
+         for Mode in Mode_Value .. Info.Alias_Kind loop
+            Atype := Get_Alias_Ortho_Type (Tinfo, Mode);
+            if Mode = Mode_Signal then
+               Id := Create_Var_Identifier (Decl, "_SIG", 0);
+            else
+               Id := Create_Var_Identifier (Decl);
+            end if;
+            Info.Alias_Var (Mode) := Create_Var (Id, Atype);
+         end loop;
+      end if;
    end Translate_Object_Alias_Declaration;
 
    procedure Elab_Object_Alias_Declaration
@@ -1913,6 +1933,11 @@ package body Trans.Chap4 is
         and then Get_Kind (Get_Parent (Decl)) not in Iir_Kinds_Subprogram_Body
       then
          --  Not supported or set by pre-elaboration.
+         return;
+      end if;
+
+      if Alias_Info.Alias_Direct then
+         --  Nothing to do.
          return;
       end if;
 
@@ -2049,7 +2074,13 @@ package body Trans.Chap4 is
             when Iir_Kind_Interface_Type_Declaration =>
                Translate_Interface_Type_Association (Inter, Assoc);
             when Iir_Kinds_Interface_Subprogram_Declaration =>
-               null;
+               --  Copy info so that the subprogram interface can be called
+               --  from outside.
+               declare
+                  Orig : constant Iir := Get_Associated_Subprogram (Inter);
+               begin
+                  Set_Info (Inter, Get_Info (Orig));
+               end;
             when others =>
                Error_Kind ("translate_generic_association_chain", Inter);
          end case;
@@ -2109,7 +2140,9 @@ package body Trans.Chap4 is
             null;
 
          when Iir_Kind_Component_Declaration =>
-            Chap4.Translate_Component_Declaration (Decl);
+            if not Get_Macro_Expand_Flag (Decl) then
+               Chap4.Translate_Component_Declaration (Decl);
+            end if;
          when Iir_Kind_Type_Declaration =>
             --  A type declaration can be in fact a subtype declaration.
             Chap4.Translate_Type_Declaration (Decl);
@@ -2122,7 +2155,8 @@ package body Trans.Chap4 is
             | Iir_Kind_Procedure_Declaration =>
             raise Internal_Error;
          when Iir_Kind_Function_Body
-            | Iir_Kind_Procedure_Body =>
+            | Iir_Kind_Procedure_Body
+            | Iir_Kind_Subprogram_Instantiation_Body =>
             null;
 
          when Iir_Kind_Protected_Type_Body =>
@@ -2580,9 +2614,11 @@ package body Trans.Chap4 is
          case Get_Kind (El) is
             when Iir_Kind_Procedure_Declaration
               | Iir_Kind_Function_Declaration =>
+               --  Translate interfaces.
                if not Is_Implicit_Subprogram (El)
                  and then (not Flag_Discard_Unused or else Get_Use_Flag (El))
                  and then not Is_Second_Subprogram_Specification (El)
+                 and then Get_Generic_Chain (El) = Null_Iir
                then
                   Info := Add_Info (El, Kind_Subprg);
                   Chap2.Translate_Subprogram_Interfaces (El);
@@ -2592,8 +2628,14 @@ package body Trans.Chap4 is
                      end if;
                   end if;
                end if;
+            when Iir_Kinds_Subprogram_Instantiation_Declaration =>
+               if not Flag_Discard_Unused or else Get_Use_Flag (El) then
+                  Info := Add_Info (El, Kind_Subprg);
+                  Chap2.Translate_Subprogram_Interfaces (El);
+               end if;
             when Iir_Kind_Function_Body
-               | Iir_Kind_Procedure_Body =>
+               | Iir_Kind_Procedure_Body
+               | Iir_Kind_Subprogram_Instantiation_Body =>
                null;
             when others =>
                Translate_Declaration (El);
@@ -2822,18 +2864,30 @@ package body Trans.Chap4 is
                   end if;
                end if;
             when Iir_Kind_Function_Body
-              | Iir_Kind_Procedure_Body =>
+               | Iir_Kind_Procedure_Body
+               | Iir_Kind_Subprogram_Instantiation_Body =>
                if Do_Bodies then
                   --  Do not translate body if generating only specs (for
                   --  subprograms in an entity).
-                  if not Flag_Discard_Unused
-                    or else
-                    Get_Use_Flag (Get_Subprogram_Specification (El))
-                  then
-                     Chap2.Translate_Subprogram_Body (El);
-                     Translate_Resolution_Function_Body
-                       (Get_Subprogram_Specification (El));
-                  end if;
+                  declare
+                     Spec : constant Iir := Get_Subprogram_Specification (El);
+                  begin
+                     if (not Flag_Discard_Unused or else Get_Use_Flag (Spec))
+                       and then
+                       (Get_Kind (Spec)
+                         in Iir_Kinds_Subprogram_Instantiation_Declaration
+                        or else Get_Generic_Chain (Spec) = Null_Iir)
+                     then
+                        Chap2.Translate_Subprogram_Body (El);
+                        Translate_Resolution_Function_Body (Spec);
+                     end if;
+                  end;
+               end if;
+            when Iir_Kinds_Subprogram_Instantiation_Declaration =>
+               --  Translate only if used.
+               if Do_Specs and then Get_Info (El) /= null then
+                  Chap2.Translate_Subprogram_Declaration (El);
+                  --  Translate_Resolution_Function (El);
                end if;
             when Iir_Kind_Type_Declaration
                | Iir_Kind_Anonymous_Type_Declaration =>
@@ -2940,8 +2994,18 @@ package body Trans.Chap4 is
                   Chap2.Elab_Subprogram_Interfaces (Decl);
                end if;
             when Iir_Kind_Function_Body
-               | Iir_Kind_Procedure_Body =>
+               | Iir_Kind_Procedure_Body
+               | Iir_Kind_Subprogram_Instantiation_Body =>
                null;
+            when Iir_Kinds_Subprogram_Instantiation_Declaration =>
+               if not Flag_Discard_Unused or else Get_Use_Flag (Decl) then
+                  --  Elaborate generics.
+                  --  There is no need to switch between formal and actual
+                  --  env (recursive instantiation would be infinite...)
+                  Chap5.Elab_Generic_Map_Aspect
+                    (Decl, Decl, (null, Null_Var_Scope));
+                  Chap2.Elab_Subprogram_Interfaces (Decl);
+               end if;
 
             when Iir_Kind_Attribute_Implicit_Declaration =>
                declare
@@ -3385,7 +3449,6 @@ package body Trans.Chap4 is
       Base_Block : Iir;
       Entity     : Iir)
    is
-      pragma Unreferenced (Num);
       use Trans.Chap5;
       Formal     : constant Iir := Get_Association_Formal (Assoc, Inter);
       Actual     : constant Iir := Get_Actual (Assoc);
@@ -3401,7 +3464,7 @@ package body Trans.Chap4 is
       --  Declare the subprogram.
       Assoc_Info := Add_Info (Assoc, Kind_Inertial_Assoc);
       Start_Procedure_Decl
-        (Inter_List, Create_Identifier (Inter, "INERTIAL"),
+        (Inter_List, Create_Identifier (Inter, Num, "INERTIAL"),
          O_Storage_Private);
       New_Interface_Decl (Inter_List, Assoc_Info.Inertial_Inst,
                           Wki_Instance, Base_Block_Info.Block_Decls_Ptr_Type);
@@ -3500,6 +3563,7 @@ package body Trans.Chap4 is
       Assoc_Inter : Iir;
       Inter : Iir;
       Info  : Assoc_Info_Acc;
+      Formal : Iir;
       Num : Iir_Int32;
    begin
       Assoc := Get_Port_Map_Aspect_Chain (Stmt);
@@ -3511,6 +3575,15 @@ package body Trans.Chap4 is
       end if;
       while Assoc /= Null_Iir loop
          Inter := Get_Association_Interface (Assoc, Assoc_Inter);
+
+         --  If the formal is a slice, it will potentially be used at several
+         --  places.  Create the type/variables for the slice now.
+         Formal := Get_Formal (Assoc);
+         if Formal /= Null_Iir and then Get_Kind (Formal) = Iir_Kind_Slice_Name
+         then
+            Chap3.Create_Composite_Subtype (Get_Type (Formal), False);
+         end if;
+
          case Get_Kind (Assoc) is
             when Iir_Kind_Association_Element_By_Name =>
                Info := null;
@@ -3531,7 +3604,6 @@ package body Trans.Chap4 is
                        (Stmt, Block, Assoc, Inter,
                         Conv_Mode_Out, Info.Assoc_Out,
                         Num, Base_Block, Entity);
-                     Num := Num + 1;
                   end if;
                end if;
             when Iir_Kind_Association_Element_By_Expression =>
@@ -3545,6 +3617,7 @@ package body Trans.Chap4 is
             when others =>
                Error_Kind ("translate_association_subprograms", Assoc);
          end case;
+         Num := Num + 1;
          Next_Association_Interface (Assoc, Assoc_Inter);
       end loop;
    end Translate_Association_Subprograms;

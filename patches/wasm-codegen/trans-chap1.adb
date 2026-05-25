@@ -40,6 +40,23 @@ package body Trans.Chap1 is
         (Info.Block_Scope'Access, Info.Block_Decls_Ptr_Type);
    end Start_Block_Decl;
 
+   procedure Translate_Entity_Init_Constant (El : Iir)
+   is
+      Val : constant Iir := Get_Default_Value (El);
+      El_Type : constant Iir := Get_Type (El);
+   begin
+      if Val = Null_Iir
+        and then Get_Kind (El_Type) in Iir_Kinds_Array_Type_Definition
+        and then Get_Constraint_State (El_Type) /= Fully_Constrained
+      then
+         --  Do not initialize unconstrained array.  They will have
+         --  to be overridden by user.
+         null;
+      else
+         Chap4.Elab_Object_Value (El, Val);
+      end if;
+   end Translate_Entity_Init_Constant;
+
    procedure Translate_Entity_Init_Generics (Entity : Iir)
    is
       El : Iir;
@@ -50,21 +67,15 @@ package body Trans.Chap1 is
       while El /= Null_Iir loop
          Open_Temp;
 
-         declare
-            Val : constant Iir := Get_Default_Value (El);
-            El_Type : constant Iir := Get_Type (El);
-         begin
-            if Val = Null_Iir
-              and then Get_Kind (El_Type) in Iir_Kinds_Array_Type_Definition
-              and then Get_Constraint_State (El_Type) /= Fully_Constrained
-            then
-               --  Do not initialize unconstrained array.  They will have
-               --  to be overriden by user.
-               null;
-            else
-               Chap4.Elab_Object_Value (El, Val);
-            end if;
-         end;
+         case Get_Kind (El) is
+            when Iir_Kind_Interface_Constant_Declaration =>
+               Translate_Entity_Init_Constant (El);
+            when Iir_Kind_Interface_Package_Declaration =>
+               Chap2.Elab_Package_Instantiation_Declaration (El);
+            when others =>
+               Error_Kind ("translate_entity_init_generics", El);
+         end case;
+
          Close_Temp;
          El := Get_Chain (El);
       end loop;
@@ -290,10 +301,15 @@ package body Trans.Chap1 is
                   else
                      Clear_Scope (P_Ent_Info.Block_Scope);
                   end if;
+
+                  --  Recurse
+                  if P_Ent_Info.Block_Origin_Field /= O_Fnode_Null then
+                     Push_Pop_Instantiated_Architecture_Scope
+                       (P_Ent, P_Ent_Info, Is_Push);
+                  end if;
                end;
 
-               --  TODO: continue recursion.
-               exit;
+               return;
             when Iir_Kind_Block_Statement
               | Iir_Kind_Case_Generate_Statement
               | Iir_Kind_For_Generate_Statement

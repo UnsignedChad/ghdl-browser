@@ -1,5 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
 --  VHDL libraries handling.
 --  Copyright (C) 2018 Tristan Gingold
 --
@@ -201,6 +200,7 @@ package body Vhdl.Sem_Lib is
 
       Fe := Get_Design_File_Source (Design_File);
       if Fe = No_Source_File_Entry then
+         --  Load the file in memory.
          Fe := Files_Map.Read_Source_File
            (Get_Design_File_Directory (Design_File),
             Get_Design_File_Filename (Design_File));
@@ -211,9 +211,16 @@ package body Vhdl.Sem_Lib is
          end if;
          Set_Design_File_Source (Design_File, Fe);
 
-         --  Skip checksum verification under wasm32 (SHA-1 stubbed in JS host).
+         --  Check if the file has changed (but only if it has a checksum).
          Checksum := Get_File_Checksum (Design_File);
-         pragma Unreferenced (Checksum);
+         if Checksum /= No_File_Checksum_Id
+           and then
+           not Files_Map.Is_Eq (Files_Map.Get_File_Checksum (Fe), Checksum)
+         then
+            Error_Msg_Sem (+Loc, "file %i has changed and must be reanalysed",
+                           +Get_Design_File_Filename (Design_File));
+            raise Compilation_Error;
+         end if;
       end if;
 
       if Get_Date (Design_Unit) = Date_Obsolete then

@@ -1,5 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
 --  Semantic analysis.
 --  Copyright (C) 2002, 2003, 2004, 2005 Tristan Gingold
 --
@@ -313,7 +312,9 @@ package body Vhdl.Sem_Names is
               | Iir_Kind_Enumeration_Literal =>
                null;
             when Iir_Kind_Interface_Function_Declaration
-              | Iir_Kind_Interface_Procedure_Declaration =>
+              | Iir_Kind_Interface_Procedure_Declaration
+              | Iir_Kind_Function_Instantiation_Declaration
+              | Iir_Kind_Procedure_Instantiation_Declaration =>
                null;
             when Iir_Kinds_Denoting_Name =>
                null;
@@ -388,7 +389,7 @@ package body Vhdl.Sem_Names is
                end if;
             when others =>
                --  Consider only visible declarations (case of an implicit
-               --  declaration that is overriden by explicit one).
+               --  declaration that is overridden by explicit one).
                if Get_Identifier (Decl) = Id and Get_Visible_Flag (Decl) then
                   Add_Result (Res, Decl);
                end if;
@@ -428,10 +429,9 @@ package body Vhdl.Sem_Names is
             end;
          when Iir_Kind_Package_Instantiation_Declaration
            | Iir_Kind_Interface_Package_Declaration =>
-            --  Generics are not visible in selected name.
-            --  They are indeed not included in LRM08 12.3 f)
-            null;
-            --  Iterator_Decl_Chain (Get_Generic_Chain (Decl), Id);
+            --  A generic is a declaration, and according to LRM08 12.3 f), any
+            --  declaration is visible by selection.
+            Iterator_Decl_Chain (Get_Generic_Chain (Decl), Id);
          when Iir_Kind_Block_Statement =>
             declare
                Header : constant Iir := Get_Block_Header (Decl);
@@ -1843,12 +1843,14 @@ package body Vhdl.Sem_Names is
             Set_Base_Name (Name_Res, Res);
             return Name_Res;
          when Iir_Kind_Function_Declaration
-           | Iir_Kind_Interface_Function_Declaration =>
+           | Iir_Kind_Interface_Function_Declaration
+           | Iir_Kind_Function_Instantiation_Declaration =>
             Name_Res := Finish_Sem_Denoting_Name (Name, Res);
             Set_Type (Name_Res, Get_Return_Type (Res));
             return Name_Res;
          when Iir_Kind_Procedure_Declaration
-           | Iir_Kind_Interface_Procedure_Declaration =>
+           | Iir_Kind_Interface_Procedure_Declaration
+           | Iir_Kind_Procedure_Instantiation_Declaration =>
             return Finish_Sem_Denoting_Name (Name, Res);
          when Iir_Kind_Type_Conversion =>
             pragma Assert (Get_Kind (Name) = Iir_Kind_Parenthesis_Name);
@@ -1966,8 +1968,12 @@ package body Vhdl.Sem_Names is
            | Iir_Kind_Path_Name_Attribute
            | Iir_Kind_Instance_Name_Attribute
            | Iir_Kind_Converse_Attribute =>
-            Free_Iir (Name);
-            return Res;
+            if Get_Kind (Name) = Iir_Kind_Attribute_Name then
+               Free_Iir (Name);
+               return Res;
+            else
+               return Name;
+            end if;
          when Iir_Kinds_External_Name =>
             pragma Assert (Name = Res);
             return Res;
@@ -2401,6 +2407,14 @@ package body Vhdl.Sem_Names is
                  (+Name, "no suffix %i for overloaded selected name", +Suffix);
             end if;
          when Iir_Kind_Library_Declaration =>
+            --  LRM93 6.3
+            --  An expanded name denotes a primary unit constained in a design
+            --  library if the prefix denotes the library and the suffix is the
+            --  simple name if a primary unit whose declaration is contained
+            --  in that library.
+            --  An expanded name is not allowed for a secondary unit,
+            --  particularly for an architecture body.
+            --  GHDL: FIXME: error message more explicit
             Res := Load_Primary_Unit (Prefix, Suffix, Name);
             if Res /= Null_Iir then
                if not Soft and then not Flag_Synopsys then
@@ -3030,7 +3044,8 @@ package body Vhdl.Sem_Names is
                   +Prefix_Name);
             end if;
          when Iir_Kind_Function_Declaration
-           | Iir_Kind_Interface_Function_Declaration =>
+           | Iir_Kind_Interface_Function_Declaration
+           | Iir_Kind_Function_Instantiation_Declaration =>
             Sem_Parenthesis_Function (Prefix);
             Set_Named_Entity (Prefix_Name, Res_Prefix);
             if Res = Null_Iir then
@@ -3131,7 +3146,8 @@ package body Vhdl.Sem_Names is
             return;
 
          when Iir_Kind_Procedure_Declaration
-           | Iir_Kind_Interface_Procedure_Declaration =>
+           | Iir_Kind_Interface_Procedure_Declaration
+           | Iir_Kind_Procedure_Instantiation_Declaration =>
             Error_Msg_Sem (+Name, "cannot call %n in an expression",
                            +Prefix);
 
@@ -4251,7 +4267,8 @@ package body Vhdl.Sem_Names is
            | Iir_Kind_Group_Template_Declaration
            | Iir_Kind_File_Declaration
            | Iir_Kinds_Library_Unit
-           | Iir_Kind_Non_Object_Alias_Declaration =>
+           | Iir_Kind_Non_Object_Alias_Declaration
+           | Iir_Kind_Object_Alias_Declaration =>
             null;
 
          when Iir_Kind_Interface_Signal_Declaration
@@ -4517,6 +4534,7 @@ package body Vhdl.Sem_Names is
    --  LRM93 6
    procedure Sem_Name (Name : Iir; Keep_Alias : Boolean := False) is
    begin
+      --  Exit now if NAME was already analyzed.
       if Get_Named_Entity (Name) /= Null_Iir then
          return;
       end if;
@@ -4525,6 +4543,7 @@ package body Vhdl.Sem_Names is
          when Iir_Kind_Simple_Name
            | Iir_Kind_Character_Literal
            | Iir_Kind_Operator_Symbol =>
+            --  String_Literal may be a operator_symbol.
             Sem_Simple_Name (Name, Keep_Alias, Soft => False);
          when Iir_Kind_Selected_Name =>
             Sem_Selected_Name (Name, Keep_Alias);
@@ -5114,6 +5133,7 @@ package body Vhdl.Sem_Names is
             if Expr /= Null_Iir then
                Expr := Sem_Expression_Wildcard
                  (Expr, Wildcard_Any_Discrete_Type);
+               Set_Pathname_Expression (Path, Expr);
             end if;
          end if;
          Path := Get_Pathname_Suffix (Path);

@@ -1,6 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
-with Name_Table;
 --  Iir to ortho translator.
 --  Copyright (C) 2002 - 2014 Tristan Gingold
 --
@@ -17,6 +15,7 @@ with Name_Table;
 --  You should have received a copy of the GNU General Public License
 --  along with this program.  If not, see <gnu.org/licenses>.
 
+with Simple_IO;
 with Vhdl.Configuration;
 with Errorout; use Errorout;
 with Vhdl.Errors; use Vhdl.Errors;
@@ -540,15 +539,20 @@ package body Trans.Chap12 is
       Conf_Info : Config_Info_Acc;
       Last_Design_Unit : Natural;
    begin
+      Simple_IO.Put_Line_Err ( "DIAG: Elab enter");
+      null;
       Config_Lib := Get_Library_Unit (Config);
       Entity := Get_Entity (Config_Lib);
       Arch := Strip_Denoting_Name
         (Get_Block_Specification (Get_Block_Configuration (Config_Lib)));
 
+      --  Be sure the entity can be at the top of a design.
       Check_Entity_Declaration_Top (Entity, True);
 
       --  If all design units are loaded, late semantic checks can be
       --  performed.
+      Simple_IO.Put_Line_Err ( "DIAG: pre-load");
+      null;
       if Flag_Load_All_Design_Units then
          for I in Design_Units.First .. Design_Units.Last loop
             Unit := Design_Units.Table (I);
@@ -583,11 +587,26 @@ package body Trans.Chap12 is
          Flag_Discard_Unused_Implicit := True;
       end if;
 
+      --  Generate_Library add infos, therefore the info array must be
+      --  adjusted.
+      Simple_IO.Put_Line_Err ( "DIAG: Elaborate start, Update_Node_Infos");
+      null;
       Update_Node_Infos;
+      Simple_IO.Put_Line_Err ( "DIAG: Rtis.Generate_Library Std start");
+      null;
       Rtis.Generate_Library (Libraries.Std_Library, True);
+      Simple_IO.Put_Line_Err ( "DIAG: Translate_Standard start");
+      null;
       Translate_Standard (Whole);
+      Simple_IO.Put_Line_Err ( "DIAG: Translate_Standard done");
+      null;
+
+      --  Std.Standard has no body and is always in the closure.  Exclude it
+      --  from the stub and filelist generation.
       Set_Elab_Flag (Std_Standard_Unit, True);
 
+      --  Translate all configurations needed.
+      --  Also, set the ELAB_FLAG on package with body.
       for I in Design_Units.First .. Design_Units.Last loop
          Unit := Design_Units.Table (I);
          Lib_Unit := Get_Library_Unit (Unit);
@@ -598,6 +617,10 @@ package body Trans.Chap12 is
             Rtis.Generate_Library (Get_Library (Get_Design_File (Unit)), True);
          end if;
 
+         Simple_IO.Put_Line_Err (
+            "DIAG: unit " & Natural'Image (Natural (I)) & " " &
+            Vhdl.Utils.Image_Identifier (Lib_Unit));
+         null;
          case Get_Kind (Lib_Unit) is
             when Iir_Kind_Configuration_Declaration =>
                if Get_Identifier (Lib_Unit) /= Null_Identifier then

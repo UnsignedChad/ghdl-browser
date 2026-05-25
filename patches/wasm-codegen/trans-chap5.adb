@@ -33,8 +33,14 @@ package body Trans.Chap5 is
 
    procedure Save_Map_Env (Env : out Map_Env; Scope_Ptr : Var_Scope_Acc) is
    begin
-      Env := (Scope_Ptr => Scope_Ptr,
-              Scope => Scope_Ptr.all);
+      if Scope_Ptr /= null then
+         Env := (Scope_Ptr => Scope_Ptr,
+                 Scope => Scope_Ptr.all);
+      else
+         --  Disabled.
+         Env := (Scope_Ptr => null,
+                 Scope => Null_Var_Scope);
+      end if;
    end Save_Map_Env;
 
    procedure Restore_Map_Env (Env : Map_Env)
@@ -42,7 +48,9 @@ package body Trans.Chap5 is
       --  Avoid potential compiler bug with discriminant check.
       pragma Suppress (Discriminant_Check);
    begin
-      Env.Scope_Ptr.all := Env.Scope;
+      if Env.Scope_Ptr /= null then
+         Env.Scope_Ptr.all := Env.Scope;
+      end if;
    end Restore_Map_Env;
 
    procedure Set_Map_Env (Env : Map_Env) is
@@ -464,7 +472,7 @@ package body Trans.Chap5 is
         and then Get_Formal_Conversion (Assoc) = Null_Iir
       then
          --  Usual case: without conversions.
-         if Is_Signal_Name (Actual) then
+         if Is_Signal_Name (Actual, True) then
             --  LRM93 4.3.1.2
             --  For a signal of a scalar type, each source is either
             --  a driver or an OUT, INOUT, BUFFER or LINKAGE port of

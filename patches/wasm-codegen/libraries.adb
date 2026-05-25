@@ -1,5 +1,4 @@
 pragma Suppress (All_Checks);
-with Simple_IO;
 --  VHDL libraries handling.
 --  Copyright (C) 2002, 2003, 2004, 2005 Tristan Gingold
 --
@@ -771,21 +770,21 @@ package body Libraries is
                         return Iir_Library_Declaration
    is
       Library: Iir_Library_Declaration;
-      Found : Boolean;
    begin
       Library := Get_Library_No_Create (Ident);
       if Library /= Null_Iir then
          return Library;
       end if;
 
+      --  This is a new library.
+      --  Load_std_library must have been called before.
       pragma Assert (Ident /= Std_Names.Name_Std);
 
       Library := Create_Iir (Iir_Kind_Library_Declaration);
       Set_Location (Library, Library_Location);
       Set_Library_Directory (Library, Null_Identifier);
       Set_Identifier (Library, Ident);
-      Found := Load_Library (Library);
-      if not Found then
+      if Load_Library (Library) = False then
          if not Force then
             Error_Msg_Sem (+Loc, "cannot find resource library %i", +Ident);
          end if;
@@ -1068,9 +1067,15 @@ package body Libraries is
       New_Lib_Checksum : File_Checksum_Id;
       Id : Hash_Id;
 
+      --  File name and dir name of DECL.
       File_Name : Name_Id;
       Dir_Name : Name_Id;
    begin
+      --  As specified, the Chain must be not set.
+      pragma Assert (Get_Chain (Unit) = Null_Iir);
+
+      --  The unit must not be in the library.
+      pragma Assert (Get_Date_State (Unit) = Date_Extern);
 
       --  Mark this design unit as being loaded.
       case Get_Kind (Unit) is
@@ -1083,6 +1088,8 @@ package body Libraries is
       end case;
       Unit_Id := Get_Identifier (New_Library_Unit);
 
+      --  Set the date of the design unit as the most recently analyzed
+      --  design unit.
       case Get_Date (Unit) is
          when Date_Parsed =>
             Set_Date_State (Unit, Date_Parse);
@@ -1097,6 +1104,7 @@ package body Libraries is
             raise Internal_Error;
       end case;
 
+      --  Set file time stamp.
       declare
          File : constant Source_File_Entry :=
            Get_Design_File_Source (Get_Design_File (Unit));
@@ -1115,6 +1123,7 @@ package body Libraries is
          return;
       end if;
 
+      --  Try to find a design unit with the same name in the work library.
       Id := Get_Hash_Id_For_Unit (Unit);
       declare
          Design_Unit, Prev_Design_Unit : Iir_Design_Unit;
@@ -1221,6 +1230,8 @@ package body Libraries is
          end loop;
       end;
 
+      --  Try to find the design file in the library.
+      --  First try the last one found.
       if Last_Design_File /= Null_Iir
         and then Get_Library (Last_Design_File) = Work_Library
         and then Get_Design_File_Filename (Last_Design_File) = File_Name
@@ -1228,6 +1239,7 @@ package body Libraries is
       then
          Design_File := Last_Design_File;
       else
+         --  Search.
          Design_File := Get_Design_File_Chain (Work_Library);
          while Design_File /= Null_Iir loop
             if Get_Design_File_Filename (Design_File) = File_Name
@@ -1274,6 +1286,7 @@ package body Libraries is
       end if;
 
       if Design_File = Null_Iir then
+         -- This is the first apparition of the design file.
          Design_File := Create_Iir (Iir_Kind_Design_File);
          Location_Copy (Design_File, Unit);
 
@@ -1286,6 +1299,7 @@ package body Libraries is
          Set_Design_File_Chain (Work_Library, Design_File);
       end if;
 
+      --  Add DECL to DESIGN_FILE.
       Last_Unit := Get_Last_Design_Unit (Design_File);
       if Last_Unit = Null_Iir then
          pragma Assert (Get_First_Design_Unit (Design_File) = Null_Iir);
@@ -1297,6 +1311,7 @@ package body Libraries is
       Set_Last_Design_Unit (Design_File, Unit);
       Set_Design_File (Unit, Design_File);
 
+      --  Add DECL in unit hash table.
       Set_Hash_Chain (Unit, Unit_Hash_Table (Id));
       Unit_Hash_Table (Id) := Unit;
 
